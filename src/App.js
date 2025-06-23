@@ -4,20 +4,18 @@ import './App.css';
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState("");
-  // === NEW STATE FOR SAVED TRANSCRIPTS ===
+  const [statusMessage, setStatusMessage] = useState("Click 'Start Recording' to begin.");
   const [savedTranscripts, setSavedTranscripts] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [editContent, setEditContent] = useState("");
-  
-  const fullTranscript = useRef("");
-  const socket = useRef(null);
-  const mediaRecorder = useRef(null);
 
-  // === NEW FUNCTION TO FETCH TRANSCRIPTS ===
+  const mediaRecorder = useRef(null);
+  const audioChunks = useRef([]);
+
   const fetchTranscripts = useCallback(async () => {
     try {
       const response = await fetch("http://localhost:8000/api/transcripts");
+      if (!response.ok) throw new Error("Network response was not ok");
       const data = await response.json();
       setSavedTranscripts(data);
     } catch (error) {
@@ -25,128 +23,110 @@ function App() {
     }
   }, []);
 
-  // === NEW useEffect TO FETCH ON LOAD ===
-  // This runs once when the component first loads.
   useEffect(() => {
     fetchTranscripts();
   }, [fetchTranscripts]);
 
-
   const startRecording = useCallback(async () => {
-    // ... (This function remains unchanged)
-    setIsRecording(true);
-    setTranscript(""); 
-    fullTranscript.current = "";
+    setStatusMessage("Initializing...");
+    audioChunks.current = []; // Clear previous chunks
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorder.current = new MediaRecorder(stream);
-      
+
       mediaRecorder.current.ondataavailable = (event) => {
-        if (event.data.size > 0 && socket.current && socket.current.readyState === WebSocket.OPEN) {
-          socket.current.send(event.data);
+        audioChunks.current.push(event.data);
+      };
+
+      mediaRecorder.current.onstart = () => {
+        setIsRecording(true);
+        setStatusMessage("Recording... Click 'Stop' to transcribe.");
+      };
+
+      mediaRecorder.current.onstop = async () => {
+        setStatusMessage("Processing audio...");
+        const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' });
+
+        // Use FormData to send the file
+        const formData = new FormData();
+        formData.append("audio_file", audioBlob, "recording.webm");
+
+        try {
+          // Send audio to the new transcription endpoint
+          const transcribeResponse = await fetch("http://localhost:8000/api/transcribe", {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!transcribeResponse.ok) {
+            throw new Error(`Transcription failed: ${await transcribeResponse.text()}`);
+          }
+
+          const result = await transcribeResponse.json();
+          const finalTranscript = result.transcript;
+          setStatusMessage("Transcription complete. Saving...");
+
+          // Now save the received transcript text
+          const saveResponse = await fetch("http://localhost:8000/api/transcripts", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: finalTranscript }),
+          });
+
+          if (saveResponse.ok) {
+            setStatusMessage("Saved! Ready to start new recording.");
+            fetchTranscripts(); // Refresh the list of saved transcripts
+          } else {
+            throw new Error("Failed to save transcript.");
+          }
+        } catch (error) {
+          console.error("Error during transcription/saving:", error);
+          setStatusMessage(`Error: ${error.message}`);
         }
-      };
 
-      socket.current = new WebSocket("ws://localhost:8000/ws");
-
-      socket.current.onopen = () => {
-        setTranscript("Connected. Listening...");
-        mediaRecorder.current.start(1000); 
-      };
-
-      socket.current.onmessage = (event) => {
-        const receivedText = event.data;
-        setTranscript(prev => prev + receivedText);
-        fullTranscript.current += receivedText;
-      };
-
-      socket.current.onclose = () => {
-        setIsRecording(false);
-        if (mediaRecorder.current) {
-            stream.getTracks().forEach(track => track.stop());
-        }
-      };
-
-      socket.current.onerror = (error) => {
-        console.error("WebSocket error:", error);
+        // Clean up stream
+        stream.getTracks().forEach(track => track.stop());
         setIsRecording(false);
       };
 
+      mediaRecorder.current.start();
     } catch (error) {
-      console.error("Error in startRecording:", error);
+      console.error("Error starting recording:", error);
+      setStatusMessage("Could not start recording. Please allow microphone access.");
       setIsRecording(false);
     }
-  }, []);
+  }, [fetchTranscripts]);
 
-  const handleEdit = useCallback(async () => {
-  if (!editingId || !editContent) return;
-  
-  try {
-    const response = await fetch(`http://localhost:8000/api/transcripts/${editingId}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ content: editContent }),
-    });
-
-    if (response.ok) {
-      setSavedTranscripts(prev => 
-        prev.map(item => 
-          item.id === editingId 
-            ? {...item, content: editContent} 
-            : item
-        )
-      );
-      setEditingId(null);
-      setEditContent("");
-    } else {
-      console.error("Failed to update transcript");
-    }
-  } catch (error) {
-    console.error("Error updating transcript:", error);
-  }
-}, [editingId, editContent]);
-
-  const stopRecording = useCallback(async () => {
-    // ... (This function is mostly unchanged, but now it re-fetches the list)
+  const stopRecording = useCallback(() => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
       mediaRecorder.current.stop();
     }
-    if (socket.current) {
-      socket.current.close(1000, "User clicked stop");
-    }
+  }, []);
 
-    if (fullTranscript.current.trim().length > 0) {
-      setTranscript("Saving...");
-      try {
-        const response = await fetch("http://localhost:8000/api/transcripts", {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ content: fullTranscript.current }),
-        });
-
-        if (response.ok) {
-          setTranscript("Saved!");
-          // === RE-FETCH THE LIST AFTER SAVING ===
-          fetchTranscripts(); 
-        } else {
-          setTranscript("Failed to save.");
-        }
-      } catch (error) {
-        console.error("Error saving transcript:", error);
-        setTranscript("Error saving.");
+  const handleUpdate = useCallback(async () => {
+    if (!editingId) return;
+    try {
+      const response = await fetch(`http://localhost:8000/api/transcripts/${editingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editContent }),
+      });
+      if (response.ok) {
+        setEditingId(null);
+        fetchTranscripts();
+      } else {
+        console.error("Failed to update transcript");
       }
+    } catch (error) {
+      console.error("Error updating transcript:", error);
     }
-  }, [fetchTranscripts]);
+  }, [editingId, editContent, fetchTranscripts]);
 
   return (
     <div className="App">
       <div className="main-recorder">
-        <h1>Voice-to-Text Transcriber</h1>
+        <h1>Voice-to-Text Transcriber (Gemini)</h1>
         <div className="buttons-container">
           {!isRecording ? (
             <button onClick={startRecording}>Start Recording</button>
@@ -155,47 +135,43 @@ function App() {
           )}
         </div>
         <div className="transcript-container">
-          <h2>Live Transcript:</h2>
-          <div style={{ whiteSpace: 'pre-wrap' }}>{transcript}</div>
+          <h2>Status:</h2>
+          <p style={{ whiteSpace: 'pre-wrap' }}>{statusMessage}</p>
         </div>
       </div>
-
-      {/* === NEW SECTION TO DISPLAY SAVED TRANSCRIPTS === */}
       <div className="saved-transcripts">
-  <h2>Saved Recordings</h2>
-  {savedTranscripts.length > 0 ? (
-    savedTranscripts.map((item) => (
-      <div key={item.id} className="transcript-card">
-        <p className="transcript-date">
-          Saved on: {new Date(item.created_at).toLocaleString()}
-          {editingId === item.id ? (
-            <div>
-              <button onClick={handleEdit}>Save</button>
-              <button onClick={() => setEditingId(null)}>Cancel</button>
+        <h2>Saved Recordings</h2>
+        {savedTranscripts.length > 0 ? (
+          savedTranscripts.map((item) => (
+            <div key={item.id} className="transcript-card">
+              <p className="transcript-date">
+                Saved on: {new Date(item.created_at).toLocaleString()}
+              </p>
+              {editingId === item.id ? (
+                <div className="edit-area">
+                  <textarea
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    rows={5}
+                  />
+                  <button onClick={handleUpdate}>Save</button>
+                  <button onClick={() => setEditingId(null)}>Cancel</button>
+                </div>
+              ) : (
+                <>
+                  <p className="transcript-content">{item.content}</p>
+                  <button onClick={() => {
+                    setEditingId(item.id);
+                    setEditContent(item.content);
+                  }}>Edit</button>
+                </>
+              )}
             </div>
-          ) : (
-            <button onClick={() => {
-              setEditingId(item.id);
-              setEditContent(item.content);
-            }}>Edit</button>
-          )}
-        </p>
-        {editingId === item.id ? (
-          <textarea
-            value={editContent}
-            onChange={(e) => setEditContent(e.target.value)}
-            rows={5}
-            style={{ width: '100%' }}
-          />
+          ))
         ) : (
-          <p className="transcript-content">{item.content}</p>
+          <p>No saved transcripts yet. Make a recording to see it here!</p>
         )}
       </div>
-    ))
-  ) : (
-    <p>No saved transcripts yet. Make a recording to see it here!</p>
-  )}
-</div>
     </div>
   );
 }
