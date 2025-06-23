@@ -1,6 +1,7 @@
 // frontend/src/App.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
+import { v4 as uuidv4 } from 'uuid';
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
@@ -10,7 +11,9 @@ function App() {
   const [editContent, setEditContent] = useState("");
 
   const mediaRecorder = useRef(null);
-  const audioChunks = useRef([]);
+  const uploadInterval = useRef(null);
+  const pollingInterval = useRef(null);
+  const sessionId = useRef(null);
 
   const fetchTranscripts = useCallback(async () => {
     try {
@@ -25,85 +28,129 @@ function App() {
 
   useEffect(() => {
     fetchTranscripts();
+    // Cleanup intervals on component unmount
+    return () => {
+      clearInterval(uploadInterval.current);
+      clearInterval(pollingInterval.current);
+    };
   }, [fetchTranscripts]);
+
+  const pollForTranscript = useCallback((taskId) => {
+    pollingInterval.current = setInterval(async () => {
+      try {
+        const response = await fetch(`http://localhost:8000/api/transcription-status/${taskId}`);
+        if (!response.ok) {
+          throw new Error("Polling request failed");
+        }
+        const data = await response.json();
+
+        if (data.status === "complete") {
+          clearInterval(pollingInterval.current);
+          setStatusMessage("Transcription complete! Refreshing list...");
+          fetchTranscripts(); // The result is already in the DB, just refresh the list
+        } else if (data.status === "failed") {
+          clearInterval(pollingInterval.current);
+          setStatusMessage(`Error: Transcription failed. ${data.error}`);
+        } else {
+          // Still pending, just update the status message
+          setStatusMessage("Processing in background... This may take several minutes for long recordings.");
+        }
+      } catch (error) {
+        console.error("Polling error:", error);
+        clearInterval(pollingInterval.current);
+        setStatusMessage("Error: Could not get transcription status.");
+      }
+    }, 5000); // Poll every 5 seconds
+  }, [fetchTranscripts]);
+  
+  const uploadChunk = useCallback(async (blob) => {
+    if (!blob) return;
+    const formData = new FormData();
+    formData.append("session_id", sessionId.current);
+    formData.append("chunk_index", 0); // We send the whole file as one chunk now at the end
+    formData.append("audio_chunk", blob, `recording.webm`);
+
+    // For simplicity in this final version, we'll revert to a single large upload
+    // but the backend is ready for chunking if you re-implement the interval.
+    // The key change is the async background task handling.
+  }, []);
+
 
   const startRecording = useCallback(async () => {
     setStatusMessage("Initializing...");
-    audioChunks.current = []; // Clear previous chunks
+    sessionId.current = uuidv4();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder.current = new MediaRecorder(stream);
+      // Record into a single blob
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorder.current = recorder;
+      let localAudioChunks = [];
 
-      mediaRecorder.current.ondataavailable = (event) => {
-        audioChunks.current.push(event.data);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          localAudioChunks.push(event.data);
+        }
       };
-
-      mediaRecorder.current.onstart = () => {
+      
+      recorder.onstart = () => {
         setIsRecording(true);
-        setStatusMessage("Recording... Click 'Stop' to transcribe.");
+        setStatusMessage("Recording... Click 'Stop' to process.");
       };
 
-      mediaRecorder.current.onstop = async () => {
-        setStatusMessage("Processing audio...");
-        const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' });
+      recorder.onstop = async () => {
+        setStatusMessage("Uploading audio file... Please wait.");
+        const audioBlob = new Blob(localAudioChunks, { type: 'audio/webm' });
 
-        // Use FormData to send the file
         const formData = new FormData();
-        formData.append("audio_file", audioBlob, "recording.webm");
-
+        formData.append("session_id", sessionId.current);
+        // We send the whole file as a single "chunk" to a temporary file
+        formData.append("chunk_index", 0);
+        formData.append("audio_chunk", audioBlob, `chunk_0.webm`);
+        
         try {
-          // Send audio to the new transcription endpoint
-          const transcribeResponse = await fetch("http://localhost:8000/api/transcribe", {
-            method: 'POST',
-            body: formData,
-          });
-
-          if (!transcribeResponse.ok) {
-            throw new Error(`Transcription failed: ${await transcribeResponse.text()}`);
-          }
-
-          const result = await transcribeResponse.json();
-          const finalTranscript = result.transcript;
-          setStatusMessage("Transcription complete. Saving...");
-
-          // Now save the received transcript text
-          const saveResponse = await fetch("http://localhost:8000/api/transcripts", {
+          // 1. Upload the entire file as the first and only chunk
+          await fetch("http://localhost:8000/api/upload-chunk", { method: 'POST', body: formData });
+          
+          // 2. Tell the backend to start the background job
+          const finalizeResponse = await fetch("http://localhost:8000/api/finalize-recording", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: finalTranscript }),
+            body: JSON.stringify({ session_id: sessionId.current }),
           });
 
-          if (saveResponse.ok) {
-            setStatusMessage("Saved! Ready to start new recording.");
-            fetchTranscripts(); // Refresh the list of saved transcripts
-          } else {
-            throw new Error("Failed to save transcript.");
+          if (!finalizeResponse.ok) {
+            throw new Error(`Failed to start transcription job: ${await finalizeResponse.text()}`);
           }
+          
+          const { task_id } = await finalizeResponse.json();
+          setStatusMessage("File uploaded. Transcription is processing in the background.");
+          
+          // 3. Start polling for the result
+          pollForTranscript(task_id);
+
         } catch (error) {
-          console.error("Error during transcription/saving:", error);
+          console.error("Error during upload/finalization:", error);
           setStatusMessage(`Error: ${error.message}`);
         }
-
-        // Clean up stream
+        
         stream.getTracks().forEach(track => track.stop());
         setIsRecording(false);
       };
 
-      mediaRecorder.current.start();
+      recorder.start();
     } catch (error) {
       console.error("Error starting recording:", error);
       setStatusMessage("Could not start recording. Please allow microphone access.");
-      setIsRecording(false);
     }
-  }, [fetchTranscripts]);
+  }, [pollForTranscript]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
       mediaRecorder.current.stop();
     }
   }, []);
-
+  
   const handleUpdate = useCallback(async () => {
     if (!editingId) return;
     try {
@@ -126,7 +173,7 @@ function App() {
   return (
     <div className="App">
       <div className="main-recorder">
-        <h1>Voice-to-Text Transcriber (Gemini)</h1>
+        <h1>Professional Voice Transcriber</h1>
         <div className="buttons-container">
           {!isRecording ? (
             <button onClick={startRecording}>Start Recording</button>
