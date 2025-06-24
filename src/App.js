@@ -9,11 +9,17 @@ function App() {
   const [savedTranscripts, setSavedTranscripts] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [editContent, setEditContent] = useState("");
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [processingState, setProcessingState] = useState('idle'); // idle, uploading, transcribing, complete, error
 
   const mediaRecorder = useRef(null);
   const uploadInterval = useRef(null);
   const pollingInterval = useRef(null);
   const sessionId = useRef(null);
+  const audioContext = useRef(null);
+  const analyser = useRef(null);
+  const dataArray = useRef(null);
+  const animationFrame = useRef(null);
 
   const fetchTranscripts = useCallback(async () => {
     try {
@@ -30,12 +36,20 @@ function App() {
     fetchTranscripts();
     // Cleanup intervals on component unmount
     return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       clearInterval(uploadInterval.current);
       clearInterval(pollingInterval.current);
+      if (animationFrame.current) {
+        cancelAnimationFrame(animationFrame.current);
+      }
+      if (audioContext.current) {
+        audioContext.current.close();
+      }
     };
   }, [fetchTranscripts]);
 
   const pollForTranscript = useCallback((taskId) => {
+    setProcessingState('transcribing');
     pollingInterval.current = setInterval(async () => {
       try {
         const response = await fetch(`http://localhost:8000/api/transcription-status/${taskId}`);
@@ -46,11 +60,25 @@ function App() {
 
         if (data.status === "complete") {
           clearInterval(pollingInterval.current);
+          setProcessingState('complete');
           setStatusMessage("Transcription complete! Refreshing list...");
           fetchTranscripts(); // The result is already in the DB, just refresh the list
+          
+          // Reset to idle after showing success for 2 seconds
+          setTimeout(() => {
+            setProcessingState('idle');
+            setStatusMessage("Ready for next recording.");
+          }, 2000);
         } else if (data.status === "failed") {
           clearInterval(pollingInterval.current);
+          setProcessingState('error');
           setStatusMessage(`Error: Transcription failed. ${data.error}`);
+          
+          // Reset to idle after showing error for 3 seconds
+          setTimeout(() => {
+            setProcessingState('idle');
+            setStatusMessage("Ready to try again.");
+          }, 3000);
         } else {
           // Still pending, just update the status message
           setStatusMessage("Processing in background... This may take several minutes for long recordings.");
@@ -58,23 +86,65 @@ function App() {
       } catch (error) {
         console.error("Polling error:", error);
         clearInterval(pollingInterval.current);
+        setProcessingState('error');
         setStatusMessage("Error: Could not get transcription status.");
+        
+        // Reset to idle after showing error for 3 seconds
+        setTimeout(() => {
+          setProcessingState('idle');
+          setStatusMessage("Ready to try again.");
+        }, 3000);
       }
     }, 5000); // Poll every 5 seconds
   }, [fetchTranscripts]);
-  
+
+  // Audio level monitoring
+  const monitorAudioLevel = useCallback(() => {
+    if (!analyser.current || !dataArray.current) return;
+
+    analyser.current.getByteFrequencyData(dataArray.current);
+    
+    // Calculate average volume
+    let sum = 0;
+    for (let i = 0; i < dataArray.current.length; i++) {
+      sum += dataArray.current[i];
+    }
+    const average = sum / dataArray.current.length;
+    
+    // Normalize to 0-1 range and apply some smoothing
+    const normalizedLevel = Math.min(average / 128, 1);
+    setAudioLevel(prevLevel => prevLevel * 0.8 + normalizedLevel * 0.2);
+
+    if (isRecording) {
+      animationFrame.current = requestAnimationFrame(monitorAudioLevel);
+    }
+  }, [isRecording]);
+
+  const setupAudioAnalysis = useCallback(async (stream) => {
+    try {
+      audioContext.current = new (window.AudioContext || window.webkitAudioContext)();
+      analyser.current = audioContext.current.createAnalyser();
+      const source = audioContext.current.createMediaStreamSource(stream);
+      
+      analyser.current.fftSize = 256;
+      const bufferLength = analyser.current.frequencyBinCount;
+      dataArray.current = new Uint8Array(bufferLength);
+      
+      source.connect(analyser.current);
+      monitorAudioLevel();
+    } catch (error) {
+      console.error("Error setting up audio analysis:", error);
+    }
+  }, [monitorAudioLevel]);
+
+  // eslint-disable-next-line no-unused-vars
   const uploadChunk = useCallback(async (blob) => {
     if (!blob) return;
     const formData = new FormData();
     formData.append("session_id", sessionId.current);
-    formData.append("chunk_index", 0); // We send the whole file as one chunk now at the end
+    formData.append("chunk_index", 0);
     formData.append("audio_chunk", blob, `recording.webm`);
-
-    // For simplicity in this final version, we'll revert to a single large upload
-    // but the backend is ready for chunking if you re-implement the interval.
-    // The key change is the async background task handling.
   }, []);
-
 
   const startRecording = useCallback(async () => {
     setStatusMessage("Initializing...");
@@ -82,7 +152,10 @@ function App() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Record into a single blob
+      
+      // Setup audio analysis for visual feedback
+      setupAudioAnalysis(stream);
+      
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorder.current = recorder;
       let localAudioChunks = [];
@@ -99,20 +172,28 @@ function App() {
       };
 
       recorder.onstop = async () => {
+        setIsRecording(false);
+        setAudioLevel(0);
+        setProcessingState('uploading');
+        
+        if (animationFrame.current) {
+          cancelAnimationFrame(animationFrame.current);
+        }
+        if (audioContext.current) {
+          audioContext.current.close();
+        }
+
         setStatusMessage("Uploading audio file... Please wait.");
         const audioBlob = new Blob(localAudioChunks, { type: 'audio/webm' });
 
         const formData = new FormData();
         formData.append("session_id", sessionId.current);
-        // We send the whole file as a single "chunk" to a temporary file
         formData.append("chunk_index", 0);
         formData.append("audio_chunk", audioBlob, `chunk_0.webm`);
         
         try {
-          // 1. Upload the entire file as the first and only chunk
           await fetch("http://localhost:8000/api/upload-chunk", { method: 'POST', body: formData });
           
-          // 2. Tell the backend to start the background job
           const finalizeResponse = await fetch("http://localhost:8000/api/finalize-recording", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -126,16 +207,21 @@ function App() {
           const { task_id } = await finalizeResponse.json();
           setStatusMessage("File uploaded. Transcription is processing in the background.");
           
-          // 3. Start polling for the result
           pollForTranscript(task_id);
 
         } catch (error) {
           console.error("Error during upload/finalization:", error);
+          setProcessingState('error');
           setStatusMessage(`Error: ${error.message}`);
+          
+          // Reset to idle after showing error for 3 seconds
+          setTimeout(() => {
+            setProcessingState('idle');
+            setStatusMessage("Ready to try again.");
+          }, 3000);
         }
         
         stream.getTracks().forEach(track => track.stop());
-        setIsRecording(false);
       };
 
       recorder.start();
@@ -143,7 +229,7 @@ function App() {
       console.error("Error starting recording:", error);
       setStatusMessage("Could not start recording. Please allow microphone access.");
     }
-  }, [pollForTranscript]);
+  }, [pollForTranscript, setupAudioAnalysis]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
@@ -170,22 +256,103 @@ function App() {
     }
   }, [editingId, editContent, fetchTranscripts]);
 
+  // Component for audio level bars
+  const AudioLevelBars = () => (
+    <div className="audio-level-container">
+      <div className="audio-bar audio-bar-1" style={{ height: `${4 + audioLevel * 36}px` }}></div>
+      <div className="audio-bar audio-bar-2" style={{ height: `${4 + audioLevel * 26}px` }}></div>
+      <div className="audio-bar audio-bar-3" style={{ height: `${4 + audioLevel * 36}px` }}></div>
+      <div className="audio-bar audio-bar-4" style={{ height: `${4 + audioLevel * 21}px` }}></div>
+      <div className="audio-bar audio-bar-5" style={{ height: `${4 + audioLevel * 11}px` }}></div>
+    </div>
+  );
+
+  // Component for loading dots animation
+  const LoadingDots = () => (
+    <div className="loading-dots">
+      <div className="loading-dot"></div>
+      <div className="loading-dot"></div>
+      <div className="loading-dot"></div>
+    </div>
+  );
+
+  // Component for transcription animation
+  const TranscriptionAnimation = () => (
+    <div className="transcription-animation">
+      <div className="transcription-icon"></div>
+      <span>Transcribing</span>
+      <LoadingDots />
+    </div>
+  );
+
+  // Component for processing wave animation
+  const ProcessingWave = () => (
+    <div className="processing-wave">
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+      <div className="wave-bar"></div>
+    </div>
+  );
+
+  // Component for progress bar animation
+  const ProgressBar = () => (
+    <div className="progress-container">
+      <div className="progress-bar"></div>
+    </div>
+  );
+
+  // Function to render status animations based on processing state
+  const renderStatusAnimation = () => {
+    switch (processingState) {
+      case 'uploading':
+        return (
+          <>
+            <ProcessingWave />
+            <ProgressBar />
+          </>
+        );
+      case 'transcribing':
+        return <TranscriptionAnimation />;
+      case 'complete':
+        return <span className="success-animation">✓</span>;
+      case 'error':
+        return <span className="error-animation">✗</span>;
+      default:
+        return null;
+    }
+  };
+
   return (
     <div className="App">
       <div className="main-recorder">
-        <h1>Professional Voice Transcriber</h1>
+        <h1>Voice Transcriber</h1>
+        
         <div className="buttons-container">
           {!isRecording ? (
             <button onClick={startRecording}>Start Recording</button>
           ) : (
-            <button onClick={stopRecording}>Stop Recording</button>
+            <button onClick={stopRecording} className="recording">Stop Recording</button>
           )}
         </div>
-        <div className="transcript-container">
+
+        {isRecording && <AudioLevelBars />}
+        
+        <div className={`transcript-container status-container ${processingState !== 'idle' ? 'processing' : ''}`}>
           <h2>Status:</h2>
-          <p style={{ whiteSpace: 'pre-wrap' }}>{statusMessage}</p>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+            <p style={{ whiteSpace: 'pre-wrap', margin: 0, flex: 1 }}>{statusMessage}</p>
+            {renderStatusAnimation()}
+          </div>
         </div>
       </div>
+      
       <div className="saved-transcripts">
         <h2>Saved Recordings</h2>
         {savedTranscripts.length > 0 ? (
