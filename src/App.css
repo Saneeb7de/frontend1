@@ -369,15 +369,6 @@ button:active {
   gap: 10px;
 }
 
-/* .transcription-icon {
-  width: 30px;
-  height: 30px;
-  border: 3px solid #61dafb;
-  border-radius: 50%;
-  border-top-color: transparent;
-  animation: spin 1s linear infinite;
-} */
-
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
