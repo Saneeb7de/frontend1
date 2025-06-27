@@ -3,132 +3,151 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 import { v4 as uuidv4 } from 'uuid';
 
-// Updated FormattedTranscript component for App.js
-const FormattedTranscript = ({ content }) => {
-  let parsedContent;
-  try {
-    // Parse the main content
-    const mainData = JSON.parse(content);
-    
-    // Parse the medical data - handle both string and object cases
-    let medicalData;
-    if (typeof mainData.medical_data === 'string') {
-      // Remove markdown code block markers if present
-      const cleanedMedicalData = mainData.medical_data.replace(/```json\n?|\n?```/g, '').trim();
-      medicalData = JSON.parse(cleanedMedicalData);
-    } else {
-      medicalData = mainData.medical_data;
+// This component is stateful to handle real-time edits and merges
+// the display logic with interactive editing capabilities.
+const FormattedTranscript = ({ initialContent, onSave, onCancel, transcriptId }) => {
+  const [content, setContent] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
+
+  useEffect(() => {
+    // This effect resets the component's state whenever the initial content changes.
+    // This is crucial for when the user cancels an edit or selects a different transcript.
+    try {
+      const mainData = JSON.parse(initialContent);
+      // The medical_data field might be a stringified JSON within the main JSON.
+      // This cleans it up and parses it.
+      const medicalDataStr = mainData.medical_data.replace(/```json\n?|\n?```/g, '').trim();
+      const medicalData = JSON.parse(medicalDataStr);
+
+      setContent({
+        verbatim_transcription: mainData.verbatim_transcription,
+        ...medicalData
+      });
+    } catch (error) {
+      console.error("Error parsing initial content:", error);
+      setContent(null); // Set to null on error to show a fallback message.
     }
-    
-    // Extract verbatim transcription - this should already be properly unescaped
-    const verbatimTranscription = mainData.verbatim_transcription;
-    
-    // Extract medical data
-    const summary = medicalData.summary || {};
-    const extractedTerms = medicalData.extracted_terms || {};
-    const finalEnglishText = medicalData.final_english_text || '';
+  }, [initialContent]);
 
-    // Function to render a list of terms as pills
-    const renderTermPills = (terms) => {
-      if (!terms || terms.length === 0) {
-        return <p className="no-data">N/A</p>;
-      }
-      return (
-        <div className="terms-container">
-          {terms.map((term, index) => (
-            <span key={index} className="term-pill">{term}</span>
-          ))}
-        </div>
-      );
-    };
+  // Handler to remove a specific medical term from the state.
+  const handleRemoveTerm = (category, index) => {
+    const updatedTerms = { ...content.extracted_terms };
+    updatedTerms[category].splice(index, 1);
+    setContent(prev => ({ ...prev, extracted_terms: updatedTerms }));
+  };
 
-    // Function to safely render text content
-    const renderTextContent = (text) => {
-      if (!text || text === 'null') return 'N/A';
-      return text;
-    };
+  // Handler to save the edited content by calling the parent's onSave function.
+  const handleSaveChanges = () => {
+    // Reconstruct the JSON object in the exact format the backend expects.
+    const finalJSON = JSON.stringify({
+      verbatim_transcription: content.verbatim_transcription,
+      medical_data: JSON.stringify({
+        final_english_text: content.final_english_text,
+        extracted_terms: content.extracted_terms,
+        summary: content.summary
+      })
+    }, null, 2); // Pretty print JSON for readability if needed.
 
+    onSave(transcriptId, finalJSON);
+    setIsEditing(false);
+  };
+
+  // Function to render term pills with a delete button when in edit mode.
+  const renderTermPills = (category, terms) => {
+    if (!terms || terms.length === 0) {
+      return <p className="no-data">N/A</p>;
+    }
     return (
-      <div className="formatted-transcript">
-        {/* Conversation Section */}
-        <div className="transcript-section">
-          <h3>Original Conversation</h3>
-          <p className="conversation-text">{verbatimTranscription}</p>
-        </div>
-        
-        {/* English Summary Section */}
-        {finalEnglishText && (
-          <div className="transcript-section">
-            <h3>English Summary</h3>
-            <p className="conversation-text">{finalEnglishText}</p>
-          </div>
-        )}
-        
-        {/* Clinical Summary Section */}
-        <div className="transcript-section">
-          <h3>Clinical Summary</h3>
-          <div className="summary-item">
-            <h4>Medications Discussed</h4>
-            <p>{renderTextContent(summary.medications_discussed)}</p>
-          </div>
-          <div className="summary-item">
-            <h4>Important Instructions</h4>
-            <p>{renderTextContent(summary.important_instructions)}</p>
-          </div>
-          <div className="summary-item">
-            <h4>Follow-up Actions</h4>
-            <p>{renderTextContent(summary.follow_up_actions)}</p>
-          </div>
-        </div>
-        
-        {/* Extracted Medical Terms */}
-        <div className="transcript-section">
-          <h3>Extracted Medical Terms</h3>
-          {Object.entries(extractedTerms).map(([category, terms]) => (
-            (terms && terms.length > 0) && (
-              <div key={category} className="term-category">
-                <h4>{category.replace(/_/g, ' ')}</h4>
-                {renderTermPills(terms)}
-              </div>
-            )
-          ))}
-          {Object.values(extractedTerms).every(terms => !terms || terms.length === 0) && (
-            <p className="no-data">No medical terms extracted</p>
-          )}
-        </div>
+      <div className="terms-container">
+        {terms.map((term, index) => (
+          <span key={index} className="term-pill">
+            {term}
+            {isEditing && (
+              <button className="remove-term-btn" onClick={() => handleRemoveTerm(category, index)}>×</button>
+            )}
+          </span>
+        ))}
       </div>
     );
-    
-  } catch (error) {
-    console.error("Failed to parse transcript content:", error);
-    console.log("Raw content:", content); // Debug log
-    
-    // Fallback to display raw content if parsing fails
+  };
+
+  // Fallback UI if the JSON content is invalid.
+  if (!content) {
     return (
-      <div className="formatted-transcript">
-        <div className="transcript-section">
-          <h3>Raw Transcript</h3>
-          <p className="transcript-content">{content}</p>
-        </div>
-        <div className="error-message" style={{color: '#ff6b6b', fontStyle: 'italic', marginTop: '10px'}}>
-          Note: Could not parse structured data. Displaying raw content.
-        </div>
-      </div>
+       <div className="formatted-transcript">
+         <div className="transcript-section">
+           <h3>Raw Transcript</h3>
+           <p className="transcript-content">{initialContent}</p>
+         </div>
+         <div className="error-message">
+           Note: Could not parse structured data. Displaying raw content.
+         </div>
+       </div>
     );
   }
+
+  // Main render logic for the component.
+  return (
+    <div className="formatted-transcript">
+      {!isEditing ? (
+        <>
+          <div className="transcript-section">
+            <h3>Original Conversation</h3>
+            <p className="conversation-text">{content.verbatim_transcription}</p>
+          </div>
+          <div className="transcript-section">
+            <h3>English Summary</h3>
+            <p className="conversation-text">{content.final_english_text}</p>
+          </div>
+          <div className="transcript-section">
+            <h3>Clinical Summary</h3>
+            <p><strong>Medications:</strong> {content.summary?.medications_discussed || 'N/A'}</p>
+            <p><strong>Instructions:</strong> {content.summary?.important_instructions || 'N/A'}</p>
+            <p><strong>Follow-up:</strong> {content.summary?.follow_up_actions || 'N/A'}</p>
+          </div>
+          <div className="transcript-section">
+            <h3>Extracted Medical Terms</h3>
+            {Object.entries(content.extracted_terms || {}).map(([category, terms]) => (
+              (terms && terms.length > 0) && (
+                <div key={category} className="term-category">
+                  <h4>{category.replace(/_/g, ' ')}</h4>
+                  {renderTermPills(category, terms)}
+                </div>
+              )
+            ))}
+          </div>
+          <button onClick={() => setIsEditing(true)}>Edit Terms</button>
+        </>
+      ) : (
+        <div className="edit-view">
+          <h3>Editing Medical Terms</h3>
+          {Object.entries(content.extracted_terms || {}).map(([category, terms]) => (
+            <div key={category} className="term-category">
+              <h4>{category.replace(/_/g, ' ')}</h4>
+              {renderTermPills(category, terms)}
+            </div>
+          ))}
+          <div className="edit-actions">
+            <button onClick={handleSaveChanges}>Save Changes</button>
+            <button onClick={() => { setIsEditing(false); onCancel(); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
+
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Click 'Start Recording' to begin.");
   const [savedTranscripts, setSavedTranscripts] = useState([]);
-  const [editingId, setEditingId] = useState(null);
-  const [editContent, setEditContent] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
   const [processingState, setProcessingState] = useState('idle');
+  const [localAudio, setLocalAudio] = useState({});
+  const [activeHistoryId, setActiveHistoryId] = useState(null);
 
   const mediaRecorder = useRef(null);
-  const uploadInterval = useRef(null);
   const pollingInterval = useRef(null);
   const sessionId = useRef(null);
   const audioContext = useRef(null);
@@ -142,6 +161,10 @@ function App() {
       if (!response.ok) throw new Error("Network response was not ok");
       const data = await response.json();
       setSavedTranscripts(data);
+
+      const audioData = JSON.parse(localStorage.getItem('audioHistory') || '{}');
+      setLocalAudio(audioData);
+
     } catch (error) {
       console.error("Failed to fetch transcripts:", error);
     }
@@ -150,63 +173,62 @@ function App() {
   useEffect(() => {
     fetchTranscripts();
     return () => {
-      clearInterval(uploadInterval.current);
       clearInterval(pollingInterval.current);
-      if (animationFrame.current) {
-        cancelAnimationFrame(animationFrame.current);
-      }
-      if (audioContext.current) {
-        audioContext.current.close();
-      }
+      if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
+      if (audioContext.current) audioContext.current.close();
     };
   }, [fetchTranscripts]);
-
+  
   const pollForTranscript = useCallback((taskId) => {
     setProcessingState('transcribing');
     pollingInterval.current = setInterval(async () => {
       try {
         const response = await fetch(`http://localhost:8000/api/transcription-status/${taskId}`);
-        if (!response.ok) {
-          throw new Error("Polling request failed");
-        }
         const data = await response.json();
 
         if (data.status === "complete") {
           clearInterval(pollingInterval.current);
           setProcessingState('complete');
-          setStatusMessage("Transcription complete! Refreshing list...");
-          fetchTranscripts();
+          setStatusMessage("Transcription complete!");
           
+          // The backend now saves the transcript. We just need to refresh our list.
+          // We also need to associate the saved audio with the new transcript ID.
+          const resultData = JSON.parse(data.result);
+          const newTranscriptResponse = await fetch("http://localhost:8000/api/transcripts");
+          const allTranscripts = await newTranscriptResponse.json();
+          const newTranscript = allTranscripts[0]; // The newest one is at the top
+          
+          const audioHistory = JSON.parse(localStorage.getItem('audioHistory') || '{}');
+          const tempAudio = audioHistory[sessionId.current];
+          if (tempAudio && newTranscript) {
+             audioHistory[newTranscript.id] = tempAudio;
+             delete audioHistory[sessionId.current]; // Clean up temporary key
+             localStorage.setItem('audioHistory', JSON.stringify(audioHistory));
+          }
+
+          fetchTranscripts(); 
           setTimeout(() => {
             setProcessingState('idle');
             setStatusMessage("Ready for next recording.");
           }, 2000);
+
         } else if (data.status === "failed") {
-          clearInterval(pollingInterval.current);
-          setProcessingState('error');
-          setStatusMessage(`Error: Transcription failed. ${data.error}`);
-          
-          setTimeout(() => {
-            setProcessingState('idle');
-            setStatusMessage("Ready to try again.");
-          }, 3000);
+            clearInterval(pollingInterval.current);
+            setProcessingState('error');
+            setStatusMessage(`Error: Transcription failed. ${data.error}`);
+            setTimeout(() => setProcessingState('idle'), 3000);
         } else {
-          setStatusMessage("Processing in background... This may take several minutes.");
+            setStatusMessage("Processing in background... This may take several minutes.");
         }
       } catch (error) {
-        console.error("Polling error:", error);
         clearInterval(pollingInterval.current);
         setProcessingState('error');
         setStatusMessage("Error: Could not get transcription status.");
-        
-        setTimeout(() => {
-          setProcessingState('idle');
-          setStatusMessage("Ready to try again.");
-        }, 3000);
+        setTimeout(() => setProcessingState('idle'), 3000);
       }
     }, 5000);
   }, [fetchTranscripts]);
-
+  
   const monitorAudioLevel = useCallback(() => {
     if (!analyser.current || !dataArray.current) return;
     analyser.current.getByteFrequencyData(dataArray.current);
@@ -259,14 +281,21 @@ function App() {
         setIsRecording(false);
         setAudioLevel(0);
         setProcessingState('uploading');
-        if (animationFrame.current) {
-          cancelAnimationFrame(animationFrame.current);
-        }
-        if (audioContext.current) {
-          audioContext.current.close();
-        }
-        setStatusMessage("Uploading audio file... Please wait.");
+        if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
+        if (audioContext.current) audioContext.current.close();
+        
+        setStatusMessage("Uploading audio file...");
         const audioBlob = new Blob(localAudioChunks, { type: 'audio/webm' });
+        
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = () => {
+          const base64Audio = reader.result;
+          const audioHistory = JSON.parse(localStorage.getItem('audioHistory') || '{}');
+          audioHistory[sessionId.current] = base64Audio;
+          localStorage.setItem('audioHistory', JSON.stringify(audioHistory));
+        };
+
         const formData = new FormData();
         formData.append("session_id", sessionId.current);
         formData.append("chunk_index", 0);
@@ -278,20 +307,13 @@ function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId.current }),
           });
-          if (!finalizeResponse.ok) {
-            throw new Error(`Failed to start transcription job: ${await finalizeResponse.text()}`);
-          }
           const { task_id } = await finalizeResponse.json();
-          setStatusMessage("File uploaded. Transcription is processing in the background.");
           pollForTranscript(task_id);
         } catch (error) {
           console.error("Error during upload/finalization:", error);
           setProcessingState('error');
           setStatusMessage(`Error: ${error.message}`);
-          setTimeout(() => {
-            setProcessingState('idle');
-            setStatusMessage("Ready to try again.");
-          }, 3000);
+          setTimeout(() => setProcessingState('idle'), 3000);
         }
         stream.getTracks().forEach(track => track.stop());
       };
@@ -308,36 +330,34 @@ function App() {
     }
   }, []);
   
-  const handleUpdate = useCallback(async () => {
-    if (!editingId) return;
+  const handleUpdate = useCallback(async (transcriptId, updatedContent) => {
     try {
-      JSON.parse(editContent);
-      const response = await fetch(`http://localhost:8000/api/transcripts/${editingId}`, {
+      const response = await fetch(`http://localhost:8000/api/transcripts/${transcriptId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: editContent }),
+        body: JSON.stringify({ content: updatedContent }),
       });
       if (response.ok) {
-        setEditingId(null);
         fetchTranscripts();
       } else {
-        console.error("Failed to update transcript");
         alert("Failed to update: The server rejected the changes.");
       }
     } catch (error) {
-      console.error("Error updating transcript:", error);
-      alert("Error: The content is not valid JSON. Please fix it or cancel.");
+      alert("An error occurred while saving.");
     }
-  }, [editingId, editContent, fetchTranscripts]);
-
-  // Helper components
+  }, [fetchTranscripts]);
+  
+  const toggleHistoryItem = (id) => {
+    setActiveHistoryId(prevId => (prevId === id ? null : id));
+  };
+  
   const AudioLevelBars = () => ( 
     <div className="audio-level-container">
-      <div className="audio-bar audio-bar-1" style={{ height: `${4 + audioLevel * 36}px` }}></div>
-      <div className="audio-bar audio-bar-2" style={{ height: `${4 + audioLevel * 26}px` }}></div>
-      <div className="audio-bar audio-bar-3" style={{ height: `${4 + audioLevel * 36}px` }}></div>
-      <div className="audio-bar audio-bar-4" style={{ height: `${4 + audioLevel * 21}px` }}></div>
-      <div className="audio-bar audio-bar-5" style={{ height: `${4 + audioLevel * 11}px` }}></div>
+      <div className="audio-bar" style={{ height: `${4 + audioLevel * 36}px` }}></div>
+      <div className="audio-bar" style={{ height: `${4 + audioLevel * 26}px` }}></div>
+      <div className="audio-bar" style={{ height: `${4 + audioLevel * 36}px` }}></div>
+      <div className="audio-bar" style={{ height: `${4 + audioLevel * 21}px` }}></div>
+      <div className="audio-bar" style={{ height: `${4 + audioLevel * 11}px` }}></div>
     </div>
   );
   
@@ -349,26 +369,9 @@ function App() {
     </div>
   );
   
-  const TranscriptionAnimation = () => ( 
-    <div className="transcription-animation">
-      <div className="transcription-icon"></div>
-      <span>Transcribing</span>
-      <LoadingDots />
-    </div>
-  );
-  
   const ProcessingWave = () => (
     <div className="processing-wave">
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
-      <div className="wave-bar"></div>
+      {[...Array(10)].map((_, i) => <div key={i} className="wave-bar"></div>)}
     </div>
   );
   
@@ -381,7 +384,7 @@ function App() {
   const renderStatusAnimation = () => {
     switch (processingState) {
       case 'uploading': return (<><ProcessingWave /><ProgressBar /></>);
-      case 'transcribing': return <TranscriptionAnimation />;
+      case 'transcribing': return <><LoadingDots /><span>Transcribing</span></>;
       case 'complete': return <span className="success-animation">✓</span>;
       case 'error': return <span className="error-animation">✗</span>;
       default: return null;
@@ -406,8 +409,8 @@ function App() {
         {isRecording && <AudioLevelBars />}
         <div className={`transcript-container status-container ${processingState !== 'idle' ? 'processing' : ''}`}>
           <h2>Status:</h2>
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
-            <p style={{ whiteSpace: 'pre-wrap', margin: 0, flex: 1 }}>{statusMessage}</p>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+            <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{statusMessage}</p>
             {renderStatusAnimation()}
           </div>
         </div>
@@ -418,39 +421,29 @@ function App() {
         {savedTranscripts.length > 0 ? (
           savedTranscripts.map((item) => (
             <div key={item.id} className="transcript-card">
-              <p className="transcript-date">
-                Saved on: {new Date(item.created_at).toLocaleString()}
-              </p>
-              {editingId === item.id ? (
-                <div className="edit-area">
-                  <textarea
-                    value={editContent}
-                    onChange={(e) => setEditContent(e.target.value)}
-                    rows={20}
+              <div className="history-summary" onClick={() => toggleHistoryItem(item.id)}>
+                 <p className="transcript-date">
+                   Saved on: {new Date(item.created_at).toLocaleString()}
+                 </p>
+                 <span>{activeHistoryId === item.id ? '▲' : '▼'}</span>
+              </div>
+              
+              {activeHistoryId === item.id && (
+                <div className="history-details">
+                  {localAudio[item.id] && (
+                    <div className="audio-player-container">
+                      <h4>Recorded Audio</h4>
+                      <audio controls src={localAudio[item.id]} />
+                    </div>
+                  )}
+
+                  <FormattedTranscript
+                    transcriptId={item.id}
+                    initialContent={item.content}
+                    onSave={handleUpdate}
+                    onCancel={fetchTranscripts}
                   />
-                  <div>
-                    <button onClick={handleUpdate}>Save</button>
-                    <button onClick={() => setEditingId(null)}>Cancel</button>
-                  </div>
                 </div>
-              ) : (
-                <>
-                  <FormattedTranscript content={item.content} />
-                  <button 
-                    onClick={() => {
-                      setEditingId(item.id);
-                      try {
-                        // Format JSON for editing
-                        const parsed = JSON.parse(item.content);
-                        setEditContent(JSON.stringify(parsed, null, 2));
-                      } catch {
-                        setEditContent(item.content);
-                      }
-                    }}
-                  >
-                    Edit
-                  </button>
-                </>
               )}
             </div>
           ))
