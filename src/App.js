@@ -1,138 +1,265 @@
 // frontend/src/App.js
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './App.css';
 import { v4 as uuidv4 } from 'uuid';
 
-// This component is stateful to handle real-time edits and merges
-// the display logic with interactive editing capabilities.
-const FormattedTranscript = ({ initialContent, onSave, onCancel, transcriptId }) => {
-  const [content, setContent] = useState(null);
-  const [isEditing, setIsEditing] = useState(false);
+/**
+ * A dedicated component for editing the transcript data.
+ * It's fully controlled and handles all form state internally.
+ */
+const TranscriptEditor = ({ initialData, onSave, onCancel }) => {
+  const [editableData, setEditableData] = useState(initialData);
+  const [newTerms, setNewTerms] = useState({}); // To hold new term input values for each category
 
-  useEffect(() => {
-    // This effect resets the component's state whenever the initial content changes.
-    // This is crucial for when the user cancels an edit or selects a different transcript.
-    try {
-      const mainData = JSON.parse(initialContent);
-      // The medical_data field might be a stringified JSON within the main JSON.
-      // This cleans it up and parses it.
-      const medicalDataStr = mainData.medical_data.replace(/```json\n?|\n?```/g, '').trim();
-      const medicalData = JSON.parse(medicalDataStr);
-
-      setContent({
-        verbatim_transcription: mainData.verbatim_transcription,
-        ...medicalData
-      });
-    } catch (error) {
-      console.error("Error parsing initial content:", error);
-      setContent(null); // Set to null on error to show a fallback message.
-    }
-  }, [initialContent]);
-
-  // Handler to remove a specific medical term from the state.
-  const handleRemoveTerm = (category, index) => {
-    const updatedTerms = { ...content.extracted_terms };
-    updatedTerms[category].splice(index, 1);
-    setContent(prev => ({ ...prev, extracted_terms: updatedTerms }));
+  // Generic handler for textareas and text inputs
+  const handleTextChange = (e) => {
+    const { name, value } = e.target;
+    setEditableData(prev => ({ ...prev, [name]: value }));
   };
 
-  // Handler to save the edited content by calling the parent's onSave function.
+  // Handler for nested summary object
+  const handleSummaryChange = (e) => {
+    const { name, value } = e.target;
+    setEditableData(prev => ({
+      ...prev,
+      summary: { ...prev.summary, [name]: value }
+    }));
+  };
+
+  // Handler for the new term input fields
+  const handleNewTermChange = (category, value) => {
+    setNewTerms(prev => ({ ...prev, [category]: value }));
+  };
+
+  const handleAddTerm = (category) => {
+    const newTerm = newTerms[category]?.trim();
+    if (!newTerm) return;
+    
+    setEditableData(prev => ({
+      ...prev,
+      extracted_terms: {
+        ...prev.extracted_terms,
+        [category]: [...(prev.extracted_terms[category] || []), newTerm]
+      }
+    }));
+    setNewTerms(prev => ({ ...prev, [category]: '' })); // Clear input
+  };
+
+  const handleRemoveTerm = (category, index) => {
+    setEditableData(prev => {
+      const updatedTerms = [...prev.extracted_terms[category]];
+      updatedTerms.splice(index, 1);
+      return {
+        ...prev,
+        extracted_terms: {
+          ...prev.extracted_terms,
+          [category]: updatedTerms
+        }
+      };
+    });
+  };
+
   const handleSaveChanges = () => {
     // Reconstruct the JSON object in the exact format the backend expects.
     const finalJSON = JSON.stringify({
-      verbatim_transcription: content.verbatim_transcription,
+      verbatim_transcription: editableData.verbatim_transcription,
       medical_data: JSON.stringify({
-        final_english_text: content.final_english_text,
-        extracted_terms: content.extracted_terms,
-        summary: content.summary
+        final_english_text: editableData.final_english_text,
+        extracted_terms: editableData.extracted_terms,
+        summary: editableData.summary
       })
-    }, null, 2); // Pretty print JSON for readability if needed.
+    }, null, 2);
 
-    onSave(transcriptId, finalJSON);
+    onSave(finalJSON);
+  };
+
+  return (
+    <div className="edit-view">
+      <h3>Editing Transcript</h3>
+      
+      <div className="edit-section">
+        <h4>Original Conversation</h4>
+        <textarea
+          name="verbatim_transcription"
+          value={editableData.verbatim_transcription}
+          onChange={handleTextChange}
+          className="edit-textarea"
+          rows={6}
+        />
+      </div>
+
+      <div className="edit-section">
+        <h4>English Summary</h4>
+        <textarea
+          name="final_english_text"
+          value={editableData.final_english_text}
+          onChange={handleTextChange}
+          className="edit-textarea"
+          rows={4}
+        />
+      </div>
+
+      <div className="edit-section clinical-summary-edit">
+        <h4>Clinical Summary</h4>
+        <div>
+          <label>Medications Discussed</label>
+          <input
+            type="text"
+            name="medications_discussed"
+            value={editableData.summary?.medications_discussed || ''}
+            onChange={handleSummaryChange}
+            className="edit-input"
+          />
+        </div>
+        <div>
+          <label>Important Instructions</label>
+          <input
+            type="text"
+            name="important_instructions"
+            value={editableData.summary?.important_instructions || ''}
+            onChange={handleSummaryChange}
+            className="edit-input"
+          />
+        </div>
+        <div>
+          <label>Follow-up Actions</label>
+          <input
+            type="text"
+            name="follow_up_actions"
+            value={editableData.summary?.follow_up_actions || ''}
+            onChange={handleSummaryChange}
+            className="edit-input"
+          />
+        </div>
+      </div>
+
+      <div className="edit-section">
+        <h4>Extracted Medical Terms</h4>
+        {Object.entries(editableData.extracted_terms || {}).map(([category, terms]) => (
+          <div key={category} className="term-category-edit">
+            <div className="category-header">
+              <h4>{category.replace(/_/g, ' ')}</h4>
+            </div>
+            <div className="terms-container">
+              {terms.map((term, index) => (
+                <span key={index} className="term-pill">
+                  {term}
+                  <button className="remove-term-btn" onClick={() => handleRemoveTerm(category, index)}>×</button>
+                </span>
+              ))}
+            </div>
+            <div className="add-term">
+              <input
+                type="text"
+                className="category-input"
+                placeholder={`Add a new ${category.replace(/_/g, ' ')}...`}
+                value={newTerms[category] || ''}
+                onChange={(e) => handleNewTermChange(category, e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleAddTerm(category)}
+              />
+              <button onClick={() => handleAddTerm(category)}>Add Term</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="edit-actions">
+        <button className="save-btn" onClick={handleSaveChanges}>Save Changes</button>
+        <button className="cancel-btn" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+};
+
+
+/**
+ * This component acts as a controller, parsing the transcript content
+ * and deciding whether to show the display view or the editor view.
+ */
+const FormattedTranscript = ({ initialContent, onSave, transcriptId }) => {
+  const [isEditing, setIsEditing] = useState(false);
+
+  // useMemo is perfect here. It parses the complex JSON string only when initialContent changes.
+  const parsedContent = useMemo(() => {
+    try {
+      const mainData = JSON.parse(initialContent);
+      const medicalDataStr = mainData.medical_data.replace(/```json\n?|\n?```/g, '').trim();
+      const medicalData = JSON.parse(medicalDataStr);
+      return {
+        verbatim_transcription: mainData.verbatim_transcription,
+        ...medicalData
+      };
+    } catch (error) {
+      console.error("Error parsing initial content:", error);
+      return null; // Return null on error to render a fallback.
+    }
+  }, [initialContent]);
+
+  // Wrapper for the save function to also exit editing mode
+  const handleSave = (updatedContent) => {
+    onSave(transcriptId, updatedContent);
     setIsEditing(false);
   };
 
-  // Function to render term pills with a delete button when in edit mode.
-  const renderTermPills = (category, terms) => {
-    if (!terms || terms.length === 0) {
-      return <p className="no-data">N/A</p>;
-    }
-    return (
-      <div className="terms-container">
-        {terms.map((term, index) => (
-          <span key={index} className="term-pill">
-            {term}
-            {isEditing && (
-              <button className="remove-term-btn" onClick={() => handleRemoveTerm(category, index)}>×</button>
-            )}
-          </span>
-        ))}
-      </div>
-    );
-  };
-
   // Fallback UI if the JSON content is invalid.
-  if (!content) {
+  if (!parsedContent) {
     return (
        <div className="formatted-transcript">
-         <div className="transcript-section">
-           <h3>Raw Transcript</h3>
-           <p className="transcript-content">{initialContent}</p>
-         </div>
+         <h3>Raw Transcript</h3>
+         <p className="conversation-text">{initialContent}</p>
          <div className="error-message">
            Note: Could not parse structured data. Displaying raw content.
          </div>
        </div>
     );
   }
+  
+  // Render the editor if in editing mode
+  if (isEditing) {
+    return (
+      <TranscriptEditor 
+        initialData={parsedContent}
+        onSave={handleSave}
+        onCancel={() => setIsEditing(false)} // Simply exit editing mode, no refetch needed.
+      />
+    );
+  }
 
-  // Main render logic for the component.
+  // Default: Render the display view
   return (
     <div className="formatted-transcript">
-      {!isEditing ? (
-        <>
-          <div className="transcript-section">
-            <h3>Original Conversation</h3>
-            <p className="conversation-text">{content.verbatim_transcription}</p>
-          </div>
-          <div className="transcript-section">
-            <h3>English Summary</h3>
-            <p className="conversation-text">{content.final_english_text}</p>
-          </div>
-          <div className="transcript-section">
-            <h3>Clinical Summary</h3>
-            <p><strong>Medications:</strong> {content.summary?.medications_discussed || 'N/A'}</p>
-            <p><strong>Instructions:</strong> {content.summary?.important_instructions || 'N/A'}</p>
-            <p><strong>Follow-up:</strong> {content.summary?.follow_up_actions || 'N/A'}</p>
-          </div>
-          <div className="transcript-section">
-            <h3>Extracted Medical Terms</h3>
-            {Object.entries(content.extracted_terms || {}).map(([category, terms]) => (
-              (terms && terms.length > 0) && (
-                <div key={category} className="term-category">
-                  <h4>{category.replace(/_/g, ' ')}</h4>
-                  {renderTermPills(category, terms)}
-                </div>
-              )
-            ))}
-          </div>
-          <button onClick={() => setIsEditing(true)}>Edit Terms</button>
-        </>
-      ) : (
-        <div className="edit-view">
-          <h3>Editing Medical Terms</h3>
-          {Object.entries(content.extracted_terms || {}).map(([category, terms]) => (
+      <div className="transcript-section">
+        <h3>Original Conversation</h3>
+        <p className="conversation-text">{parsedContent.verbatim_transcription}</p>
+      </div>
+      <div className="transcript-section">
+        <h3>English Summary</h3>
+        <p className="conversation-text">{parsedContent.final_english_text}</p>
+      </div>
+      <div className="transcript-section">
+        <h3>Clinical Summary</h3>
+        <div className="summary-item">
+          <p><strong>Medications:</strong> {parsedContent.summary?.medications_discussed || 'N/A'}</p>
+          <p><strong>Instructions:</strong> {parsedContent.summary?.important_instructions || 'N/A'}</p>
+          <p><strong>Follow-up:</strong> {parsedContent.summary?.follow_up_actions || 'N/A'}</p>
+        </div>
+      </div>
+      <div className="transcript-section">
+        <h3>Extracted Medical Terms</h3>
+        {Object.entries(parsedContent.extracted_terms || {}).map(([category, terms]) => (
+          (terms && terms.length > 0) && (
             <div key={category} className="term-category">
               <h4>{category.replace(/_/g, ' ')}</h4>
-              {renderTermPills(category, terms)}
+              <div className="terms-container">
+                {terms.map((term, index) => (
+                  <span key={index} className="term-pill">{term}</span>
+                ))}
+              </div>
             </div>
-          ))}
-          <div className="edit-actions">
-            <button onClick={handleSaveChanges}>Save Changes</button>
-            <button onClick={() => { setIsEditing(false); onCancel(); }}>Cancel</button>
-          </div>
-        </div>
-      )}
+          )
+        ))}
+      </div>
+      <button onClick={() => setIsEditing(true)}>Edit Transcript</button>
     </div>
   );
 };
@@ -144,7 +271,7 @@ function App() {
   const [savedTranscripts, setSavedTranscripts] = useState([]);
   const [audioLevel, setAudioLevel] = useState(0);
   const [processingState, setProcessingState] = useState('idle');
-  const [localAudio, setLocalAudio] = useState({});
+  const [audioStorage, setAudioStorage] = useState({});
   const [activeHistoryId, setActiveHistoryId] = useState(null);
 
   const mediaRecorder = useRef(null);
@@ -161,10 +288,6 @@ function App() {
       if (!response.ok) throw new Error("Network response was not ok");
       const data = await response.json();
       setSavedTranscripts(data);
-
-      const audioData = JSON.parse(localStorage.getItem('audioHistory') || '{}');
-      setLocalAudio(audioData);
-
     } catch (error) {
       console.error("Failed to fetch transcripts:", error);
     }
@@ -175,7 +298,7 @@ function App() {
     return () => {
       clearInterval(pollingInterval.current);
       if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
-      if (audioContext.current) audioContext.current.close();
+      if (audioContext.current?.state !== 'closed') audioContext.current?.close();
     };
   }, [fetchTranscripts]);
   
@@ -191,19 +314,17 @@ function App() {
           setProcessingState('complete');
           setStatusMessage("Transcription complete!");
           
-          // The backend now saves the transcript. We just need to refresh our list.
-          // We also need to associate the saved audio with the new transcript ID.
-          const resultData = JSON.parse(data.result);
           const newTranscriptResponse = await fetch("http://localhost:8000/api/transcripts");
           const allTranscripts = await newTranscriptResponse.json();
-          const newTranscript = allTranscripts[0]; // The newest one is at the top
+          const newTranscript = allTranscripts[0];
           
-          const audioHistory = JSON.parse(localStorage.getItem('audioHistory') || '{}');
-          const tempAudio = audioHistory[sessionId.current];
-          if (tempAudio && newTranscript) {
-             audioHistory[newTranscript.id] = tempAudio;
-             delete audioHistory[sessionId.current]; // Clean up temporary key
-             localStorage.setItem('audioHistory', JSON.stringify(audioHistory));
+          if (audioStorage[sessionId.current] && newTranscript) {
+             setAudioStorage(prev => {
+               const updated = { ...prev };
+               updated[newTranscript.id] = updated[sessionId.current];
+               delete updated[sessionId.current];
+               return updated;
+             });
           }
 
           fetchTranscripts(); 
@@ -227,10 +348,10 @@ function App() {
         setTimeout(() => setProcessingState('idle'), 3000);
       }
     }, 5000);
-  }, [fetchTranscripts]);
+  }, [fetchTranscripts, audioStorage]);
   
   const monitorAudioLevel = useCallback(() => {
-    if (!analyser.current || !dataArray.current) return;
+    if (!analyser.current || !dataArray.current || !isRecording) return;
     analyser.current.getByteFrequencyData(dataArray.current);
     let sum = 0;
     for (let i = 0; i < dataArray.current.length; i++) {
@@ -239,9 +360,7 @@ function App() {
     const average = sum / dataArray.current.length;
     const normalizedLevel = Math.min(average / 128, 1);
     setAudioLevel(prevLevel => prevLevel * 0.8 + normalizedLevel * 0.2);
-    if (isRecording) {
-      animationFrame.current = requestAnimationFrame(monitorAudioLevel);
-    }
+    animationFrame.current = requestAnimationFrame(monitorAudioLevel);
   }, [isRecording]);
 
   const setupAudioAnalysis = useCallback(async (stream) => {
@@ -282,7 +401,7 @@ function App() {
         setAudioLevel(0);
         setProcessingState('uploading');
         if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
-        if (audioContext.current) audioContext.current.close();
+        if (audioContext.current?.state !== 'closed') audioContext.current?.close();
         
         setStatusMessage("Uploading audio file...");
         const audioBlob = new Blob(localAudioChunks, { type: 'audio/webm' });
@@ -291,9 +410,7 @@ function App() {
         reader.readAsDataURL(audioBlob);
         reader.onloadend = () => {
           const base64Audio = reader.result;
-          const audioHistory = JSON.parse(localStorage.getItem('audioHistory') || '{}');
-          audioHistory[sessionId.current] = base64Audio;
-          localStorage.setItem('audioHistory', JSON.stringify(audioHistory));
+          setAudioStorage(prev => ({ ...prev, [sessionId.current]: base64Audio }));
         };
 
         const formData = new FormData();
@@ -338,7 +455,7 @@ function App() {
         body: JSON.stringify({ content: updatedContent }),
       });
       if (response.ok) {
-        fetchTranscripts();
+        fetchTranscripts(); // Refresh the data from the server after a successful save
       } else {
         alert("Failed to update: The server rejected the changes.");
       }
@@ -353,33 +470,13 @@ function App() {
   
   const AudioLevelBars = () => ( 
     <div className="audio-level-container">
-      <div className="audio-bar" style={{ height: `${4 + audioLevel * 36}px` }}></div>
-      <div className="audio-bar" style={{ height: `${4 + audioLevel * 26}px` }}></div>
-      <div className="audio-bar" style={{ height: `${4 + audioLevel * 36}px` }}></div>
-      <div className="audio-bar" style={{ height: `${4 + audioLevel * 21}px` }}></div>
-      <div className="audio-bar" style={{ height: `${4 + audioLevel * 11}px` }}></div>
+      {[...Array(5)].map((_, i) => <div key={i} className="audio-bar" style={{ height: `${4 + audioLevel * (36 - i*5)}px` }}></div>)}
     </div>
   );
   
-  const LoadingDots = () => ( 
-    <div className="loading-dots">
-      <div className="loading-dot"></div>
-      <div className="loading-dot"></div>
-      <div className="loading-dot"></div>
-    </div>
-  );
-  
-  const ProcessingWave = () => (
-    <div className="processing-wave">
-      {[...Array(10)].map((_, i) => <div key={i} className="wave-bar"></div>)}
-    </div>
-  );
-  
-  const ProgressBar = () => (
-    <div className="progress-container">
-      <div className="progress-bar"></div>
-    </div>
-  );
+  const LoadingDots = () => ( <div className="loading-dots"><div className="loading-dot"></div><div className="loading-dot"></div><div className="loading-dot"></div></div> );
+  const ProcessingWave = () => ( <div className="processing-wave">{[...Array(10)].map((_, i) => <div key={i} className="wave-bar"></div>)}</div> );
+  const ProgressBar = () => ( <div className="progress-container"><div className="progress-bar"></div></div> );
 
   const renderStatusAnimation = () => {
     switch (processingState) {
@@ -430,18 +527,16 @@ function App() {
               
               {activeHistoryId === item.id && (
                 <div className="history-details">
-                  {localAudio[item.id] && (
+                  {audioStorage[item.id] && (
                     <div className="audio-player-container">
                       <h4>Recorded Audio</h4>
-                      <audio controls src={localAudio[item.id]} />
+                      <audio controls src={audioStorage[item.id]} />
                     </div>
                   )}
-
                   <FormattedTranscript
                     transcriptId={item.id}
                     initialContent={item.content}
                     onSave={handleUpdate}
-                    onCancel={fetchTranscripts}
                   />
                 </div>
               )}

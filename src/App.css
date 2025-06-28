@@ -412,3 +412,171 @@ button:hover {
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* Add these styles to your existing App.css file */
+
+/* Edit view styles */
+.edit-view {
+  background-color: #2c303a;
+  border-radius: 8px;
+  padding: 20px;
+  margin-top: 15px;
+  border: 1px solid #444c5a;
+}
+
+.edit-section {
+  margin-bottom: 25px;
+  padding-bottom: 20px;
+  border-bottom: 1px dashed #444c5a;
+}
+
+.edit-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background-color: #333842;
+  color: #e0e0e0;
+  border: 1px solid #444c5a;
+  border-radius: 6px;
+  padding: 12px;
+  font-family: inherit;
+  font-size: 1rem;
+  resize: vertical;
+  min-height: 100px;
+}
+
+.edit-textarea:focus {
+  outline: none;
+  border-color: #61dafb;
+  box-shadow: 0 0 0 2px rgba(97, 218, 251, 0.2);
+}
+
+.edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  background-color: #333842;
+  color: #e0e0e0;
+  border: 1px solid #444c5a;
+  border-radius: 6px;
+  padding: 10px;
+  font-family: inherit;
+  font-size: 0.95rem;
+  margin-bottom: 10px;
+}
+
+.edit-input:focus {
+  outline: none;
+  border-color: #61dafb;
+  box-shadow: 0 0 0 2px rgba(97, 218, 251, 0.2);
+}
+
+/* Clinical summary edit */
+.clinical-summary-edit > div {
+  margin-bottom: 15px;
+}
+
+.clinical-summary-edit label {
+  display: block;
+  margin-bottom: 6px;
+  color: #adbac7;
+  font-size: 0.9rem;
+}
+
+/* Term category editing */
+.term-category-edit {
+  background-color: #333842;
+  border-radius: 6px;
+  padding: 15px;
+  margin-bottom: 20px;
+  border: 1px solid #444c5a;
+}
+
+.category-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.category-input {
+  background-color: #2c303a;
+  color: #e0e0e0;
+  border: 1px solid #444c5a;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 1rem;
+  width: 70%;
+}
+
+.category-input:focus {
+  outline: none;
+  border-color: #61dafb;
+}
+
+/* Add term/category sections */
+.add-term {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.add-term input {
+  flex-grow: 1;
+}
+
+.add-term button {
+  background-color: #4CAF50;
+  white-space: nowrap;
+  padding: 8px 15px;
+}
+
+/* Action buttons */
+.edit-actions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.save-btn {
+  background-color: #4CAF50;
+  padding: 10px 20px;
+  font-weight: 500;
+}
+
+.cancel-btn {
+  background-color: #ff4444;
+  padding: 10px 20px;
+  font-weight: 500;
+}
+
+/* Button hover effects */
+button:hover {
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .category-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  
+  .category-input {
+    width: 100%;
+  }
+  
+  .add-term, .add-category {
+    flex-direction: column;
+  }
+  
+  .edit-actions {
+    flex-direction: column;
+  }
+  
+  .edit-actions button {
+    width: 100%;
+  }
+}
