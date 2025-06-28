@@ -3,6 +3,9 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import './App.css';
 import { v4 as uuidv4 } from 'uuid';
 
+// Backend URL - Change this to your deployed backend
+const BACKEND_URL = "https://backend1-410p.onrender.com";
+
 /**
  * A dedicated component for editing the transcript data.
  * It's fully controlled and handles all form state internally.
@@ -284,7 +287,7 @@ function App() {
 
   const fetchTranscripts = useCallback(async () => {
     try {
-      const response = await fetch("http://localhost:8000/api/transcripts");
+      const response = await fetch(`${BACKEND_URL}/api/transcripts`);
       if (!response.ok) throw new Error("Network response was not ok");
       const data = await response.json();
       setSavedTranscripts(data);
@@ -306,7 +309,7 @@ function App() {
     setProcessingState('transcribing');
     pollingInterval.current = setInterval(async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/transcription-status/${taskId}`);
+        const response = await fetch(`${BACKEND_URL}/api/transcription-status/${taskId}`);
         const data = await response.json();
 
         if (data.status === "complete") {
@@ -314,7 +317,7 @@ function App() {
           setProcessingState('complete');
           setStatusMessage("Transcription complete!");
           
-          const newTranscriptResponse = await fetch("http://localhost:8000/api/transcripts");
+          const newTranscriptResponse = await fetch(`${BACKEND_URL}/api/transcripts`);
           const allTranscripts = await newTranscriptResponse.json();
           const newTranscript = allTranscripts[0];
           
@@ -418,8 +421,8 @@ function App() {
         formData.append("chunk_index", 0);
         formData.append("audio_chunk", audioBlob, `chunk_0.webm`);
         try {
-          await fetch("http://localhost:8000/api/upload-chunk", { method: 'POST', body: formData });
-          const finalizeResponse = await fetch("http://localhost:8000/api/finalize-recording", {
+          await fetch(`${BACKEND_URL}/api/upload-chunk`, { method: 'POST', body: formData });
+          const finalizeResponse = await fetch(`${BACKEND_URL}/api/finalize-recording`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId.current }),
@@ -449,7 +452,7 @@ function App() {
   
   const handleUpdate = useCallback(async (transcriptId, updatedContent) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/transcripts/${transcriptId}`, {
+      const response = await fetch(`${BACKEND_URL}/api/transcripts/${transcriptId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: updatedContent }),
