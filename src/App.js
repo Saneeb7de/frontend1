@@ -1,10 +1,10 @@
-// frontend/src/App.js
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './App.css';
 import { v4 as uuidv4 } from 'uuid';
 
 // Backend URL - Change this to your deployed backend
 const BACKEND_URL = "https://backend1-410p.onrender.com";
+// const BACKEND_URL = "http://localhost:8000"; // Local development URL
 
 /**
  * A dedicated component for editing the transcript data.
@@ -186,8 +186,16 @@ const FormattedTranscript = ({ initialContent, onSave, transcriptId }) => {
   const parsedContent = useMemo(() => {
     try {
       const mainData = JSON.parse(initialContent);
-      const medicalDataStr = mainData.medical_data.replace(/```json\n?|\n?```/g, '').trim();
-      const medicalData = JSON.parse(medicalDataStr);
+      
+      // Handle both possible medical_data formats (string or object)
+      let medicalData;
+      if (typeof mainData.medical_data === 'string') {
+        const medicalDataStr = mainData.medical_data.replace(/```json\n?|\n?```/g, '').trim();
+        medicalData = JSON.parse(medicalDataStr);
+      } else {
+        medicalData = mainData.medical_data;
+      }
+      
       return {
         verbatim_transcription: mainData.verbatim_transcription,
         ...medicalData
@@ -276,6 +284,7 @@ function App() {
   const [processingState, setProcessingState] = useState('idle');
   const [audioStorage, setAudioStorage] = useState({});
   const [activeHistoryId, setActiveHistoryId] = useState(null);
+  const [serverStatus, setServerStatus] = useState({ activeTasks: 0, maxTasks: 2 });
 
   const mediaRecorder = useRef(null);
   const pollingInterval = useRef(null);
@@ -296,14 +305,36 @@ function App() {
     }
   }, []);
 
+  const fetchServerStatus = useCallback(async () => {
+    try {
+      const response = await fetch(BACKEND_URL);
+      if (!response.ok) return;
+      
+      const data = await response.json();
+      const [activeTasks, maxTasks] = data.concurrent_tasks.split('/').map(Number);
+      
+      setServerStatus({
+        activeTasks: isNaN(activeTasks) ? 0 : activeTasks,
+        maxTasks: isNaN(maxTasks) ? 2 : maxTasks
+      });
+    } catch (error) {
+      console.error("Failed to fetch server status:", error);
+    }
+  }, []);
+
   useEffect(() => {
     fetchTranscripts();
+    fetchServerStatus();
+    
+    const statusInterval = setInterval(fetchServerStatus, 30000);
+    
     return () => {
       clearInterval(pollingInterval.current);
+      clearInterval(statusInterval);
       if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
       if (audioContext.current?.state !== 'closed') audioContext.current?.close();
     };
-  }, [fetchTranscripts]);
+  }, [fetchTranscripts, fetchServerStatus]);
   
   const pollForTranscript = useCallback((taskId) => {
     setProcessingState('transcribing');
@@ -316,18 +347,20 @@ function App() {
           clearInterval(pollingInterval.current);
           setProcessingState('complete');
           setStatusMessage("Transcription complete!");
+          fetchServerStatus();
           
-          const newTranscriptResponse = await fetch(`${BACKEND_URL}/api/transcripts`);
-          const allTranscripts = await newTranscriptResponse.json();
-          const newTranscript = allTranscripts[0];
-          
-          if (audioStorage[sessionId.current] && newTranscript) {
-             setAudioStorage(prev => {
-               const updated = { ...prev };
-               updated[newTranscript.id] = updated[sessionId.current];
-               delete updated[sessionId.current];
-               return updated;
-             });
+          // Update audio storage with new transcript ID
+          if (audioStorage[sessionId.current]) {
+            const newTranscriptResponse = await fetch(`${BACKEND_URL}/api/transcripts`);
+            const allTranscripts = await newTranscriptResponse.json();
+            const newTranscript = allTranscripts[0];
+            
+            if (newTranscript) {
+              setAudioStorage(prev => ({
+                ...prev,
+                [newTranscript.id]: prev[sessionId.current]
+              }));
+            }
           }
 
           fetchTranscripts(); 
@@ -351,7 +384,7 @@ function App() {
         setTimeout(() => setProcessingState('idle'), 3000);
       }
     }, 5000);
-  }, [fetchTranscripts, audioStorage]);
+  }, [fetchTranscripts, audioStorage, fetchServerStatus]);
   
   const monitorAudioLevel = useCallback(() => {
     if (!analyser.current || !dataArray.current || !isRecording) return;
@@ -382,6 +415,14 @@ function App() {
   }, [monitorAudioLevel]);
 
   const startRecording = useCallback(async () => {
+    // Check server capacity before starting
+    if (serverStatus.activeTasks >= serverStatus.maxTasks) {
+      setProcessingState('error');
+      setStatusMessage("Server is at capacity. Please try again later.");
+      setTimeout(() => setProcessingState('idle'), 3000);
+      return;
+    }
+    
     setStatusMessage("Initializing...");
     sessionId.current = uuidv4();
     try {
@@ -390,15 +431,18 @@ function App() {
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorder.current = recorder;
       let localAudioChunks = [];
+      
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           localAudioChunks.push(event.data);
         }
       };
+      
       recorder.onstart = () => {
         setIsRecording(true);
         setStatusMessage("Recording... Click 'Stop' to process.");
       };
+      
       recorder.onstop = async () => {
         setIsRecording(false);
         setAudioLevel(0);
@@ -409,6 +453,7 @@ function App() {
         setStatusMessage("Uploading audio file...");
         const audioBlob = new Blob(localAudioChunks, { type: 'audio/webm' });
         
+        // Store audio locally for playback
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = () => {
@@ -416,33 +461,53 @@ function App() {
           setAudioStorage(prev => ({ ...prev, [sessionId.current]: base64Audio }));
         };
 
-        const formData = new FormData();
-        formData.append("session_id", sessionId.current);
-        formData.append("chunk_index", 0);
-        formData.append("audio_chunk", audioBlob, `chunk_0.webm`);
         try {
-          await fetch(`${BACKEND_URL}/api/upload-chunk`, { method: 'POST', body: formData });
+          // Upload the single audio chunk
+          const formData = new FormData();
+          formData.append("session_id", sessionId.current);
+          formData.append("chunk_index", 0);
+          formData.append("audio_chunk", audioBlob, `chunk_0.webm`);
+          
+          await fetch(`${BACKEND_URL}/api/upload-chunk`, { 
+            method: 'POST', 
+            body: formData 
+          });
+          
+          // Finalize the recording session
           const finalizeResponse = await fetch(`${BACKEND_URL}/api/finalize-recording`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId.current }),
           });
+          
+          // Handle server busy state
+          if (finalizeResponse.status === 429) {
+            setProcessingState('error');
+            setStatusMessage("Server is busy. Please try again later.");
+            return;
+          }
+          
           const { task_id } = await finalizeResponse.json();
+          fetchServerStatus();
           pollForTranscript(task_id);
         } catch (error) {
           console.error("Error during upload/finalization:", error);
           setProcessingState('error');
-          setStatusMessage(`Error: ${error.message}`);
+          setStatusMessage(`Error: ${error.message || "Server communication failed"}`);
           setTimeout(() => setProcessingState('idle'), 3000);
+        } finally {
+          stream.getTracks().forEach(track => track.stop());
         }
-        stream.getTracks().forEach(track => track.stop());
       };
+      
       recorder.start();
     } catch (error) {
       console.error("Error starting recording:", error);
+      setProcessingState('error');
       setStatusMessage("Could not start recording. Please allow microphone access.");
+      setTimeout(() => setProcessingState('idle'), 3000);
     }
-  }, [pollForTranscript, setupAudioAnalysis]);
+  }, [pollForTranscript, setupAudioAnalysis, serverStatus, fetchServerStatus]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
@@ -457,13 +522,16 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: updatedContent }),
       });
+      
       if (response.ok) {
-        fetchTranscripts(); // Refresh the data from the server after a successful save
+        fetchTranscripts(); // Refresh transcripts after update
+      } else if (response.status === 404) {
+        alert("Transcript not found. It may have been deleted.");
       } else {
         alert("Failed to update: The server rejected the changes.");
       }
     } catch (error) {
-      alert("An error occurred while saving.");
+      alert("An error occurred while saving. Please try again.");
     }
   }, [fetchTranscripts]);
   
@@ -473,32 +541,93 @@ function App() {
   
   const AudioLevelBars = () => ( 
     <div className="audio-level-container">
-      {[...Array(5)].map((_, i) => <div key={i} className="audio-bar" style={{ height: `${4 + audioLevel * (36 - i*5)}px` }}></div>)}
+      {[...Array(5)].map((_, i) => (
+        <div 
+          key={i} 
+          className="audio-bar" 
+          style={{ height: `${4 + audioLevel * (36 - i*5)}px` }}
+        ></div>
+      ))}
     </div>
   );
   
-  const LoadingDots = () => ( <div className="loading-dots"><div className="loading-dot"></div><div className="loading-dot"></div><div className="loading-dot"></div></div> );
-  const ProcessingWave = () => ( <div className="processing-wave">{[...Array(10)].map((_, i) => <div key={i} className="wave-bar"></div>)}</div> );
-  const ProgressBar = () => ( <div className="progress-container"><div className="progress-bar"></div></div> );
+  const LoadingDots = () => (
+    <div className="loading-dots">
+      <div className="loading-dot"></div>
+      <div className="loading-dot"></div>
+      <div className="loading-dot"></div>
+    </div>
+  );
+  
+  const ProcessingWave = () => (
+    <div className="processing-wave">
+      {[...Array(10)].map((_, i) => (
+        <div key={i} className="wave-bar" style={{ 
+          animationDelay: `${i * 0.1}s`,
+          height: `${20 + Math.sin(i) * 10}px`
+        }}></div>
+      ))}
+    </div>
+  );
+  
+  const ProgressBar = () => (
+    <div className="progress-container">
+      <div className="progress-bar"></div>
+    </div>
+  );
 
   const renderStatusAnimation = () => {
     switch (processingState) {
-      case 'uploading': return (<><ProcessingWave /><ProgressBar /></>);
-      case 'transcribing': return <><LoadingDots /><span>Transcribing</span></>;
+      case 'uploading': return <ProcessingWave />;
+      case 'transcribing': return <LoadingDots />;
       case 'complete': return <span className="success-animation">✓</span>;
       case 'error': return <span className="error-animation">✗</span>;
       default: return null;
     }
   };
 
+  // Server capacity indicator
+  const serverCapacityIndicator = () => {
+    const capacityPercent = Math.min(
+      (serverStatus.activeTasks / serverStatus.maxTasks) * 100, 
+      100
+    );
+    
+    return (
+      <div className="server-status">
+        <div className="capacity-label">
+        </div>
+        <div className="capacity-bar">
+          <div 
+            className="capacity-fill" 
+            style={{ width: `${capacityPercent}%` }}
+            data-status={
+              capacityPercent > 90 ? "high" : 
+              capacityPercent > 70 ? "medium" : "low"
+            }
+          ></div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="App">
       <div className="main-recorder">
         <h1>Voice Transcriber</h1>
+        
+        {serverCapacityIndicator()}
+        
         <div className="buttons-container">
           {!isRecording ? (
-            <button onClick={startRecording} disabled={processingState !== 'idle'}>
-              Start Recording
+            <button 
+              onClick={startRecording} 
+              disabled={processingState !== 'idle' || serverStatus.activeTasks >= serverStatus.maxTasks}
+              className={serverStatus.activeTasks >= serverStatus.maxTasks ? "disabled" : ""}
+            >
+              {serverStatus.activeTasks >= serverStatus.maxTasks 
+                ? "Server Busy" 
+                : "Start Recording"}
             </button>
           ) : (
             <button onClick={stopRecording} className="recording">
@@ -506,26 +635,36 @@ function App() {
             </button>
           )}
         </div>
+        
         {isRecording && <AudioLevelBars />}
-        <div className={`transcript-container status-container ${processingState !== 'idle' ? 'processing' : ''}`}>
+        
+        <div className={`status-container ${processingState !== 'idle' ? 'processing' : ''}`}>
           <h2>Status:</h2>
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
-            <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{statusMessage}</p>
-            {renderStatusAnimation()}
+          <div className="status-content">
+            <p className="status-message">{statusMessage}</p>
+            <div className="status-animation">
+              {renderStatusAnimation()}
+            </div>
           </div>
         </div>
       </div>
       
       <div className="saved-transcripts">
         <h2>Saved Recordings</h2>
-        {savedTranscripts.length > 0 ? (
+        
+        {savedTranscripts.length === 0 ? (
+          <p className="empty-state">No saved transcripts yet. Make a recording to see it here!</p>
+        ) : (
           savedTranscripts.map((item) => (
             <div key={item.id} className="transcript-card">
-              <div className="history-summary" onClick={() => toggleHistoryItem(item.id)}>
-                 <p className="transcript-date">
-                   Saved on: {new Date(item.created_at).toLocaleString()}
-                 </p>
-                 <span>{activeHistoryId === item.id ? '▲' : '▼'}</span>
+              <div 
+                className="history-summary" 
+                onClick={() => toggleHistoryItem(item.id)}
+              >
+                <p className="transcript-date">
+                  {new Date(item.created_at).toLocaleString()}
+                </p>
+                <span>{activeHistoryId === item.id ? '▲' : '▼'}</span>
               </div>
               
               {activeHistoryId === item.id && (
@@ -545,8 +684,6 @@ function App() {
               )}
             </div>
           ))
-        ) : (
-          <p>No saved transcripts yet. Make a recording to see it here!</p>
         )}
       </div>
     </div>
