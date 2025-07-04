@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './App.css';
 import { v4 as uuidv4 } from 'uuid';
-// import Recorder from 'recorder-js';
 
 // Backend URL - Change this to your deployed backend
 const BACKEND_URL = "https://backend1-1-mr5r.onrender.com";
@@ -432,61 +431,49 @@ function App() {
     sessionId.current = uuidv4();
 
     try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    setupAudioAnalysis(stream);
-    
-    // FIX: Proper WebSocket URL construction for production
-    let wsUrl;
-    if (BACKEND_URL.startsWith('https://')) {
-      wsUrl = BACKEND_URL.replace(/^https/, 'wss') + "/ws/live-transcribe";
-    } else {
-      wsUrl = BACKEND_URL.replace(/^http/, 'ws') + "/ws/live-transcribe";
-    }
-    
-    console.log("Attempting WebSocket connection to:", wsUrl); // Debug log
-    websocket.current = new WebSocket(wsUrl);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setupAudioAnalysis(stream);
+      
+      const wsUrl = BACKEND_URL.replace(/^http/, 'wss') + "/wss/live-transcribe";
+      websocket.current = new WebSocket(wsUrl);
 
-    websocket.current.onopen = () => {
-      console.log("✅ WebSocket connection established for live transcription.");
-      setStatusMessage("Recording... (Live transcription active)");
-    };
-    
-    websocket.current.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.error) {
-          console.error("WebSocket Error from server:", data.error);
-          setInterimTranscript(`Live transcription error: ${data.error}`);
-          return;
+      websocket.current.onopen = () => {
+        console.log("WebSocket connection established for live transcription.");
+      };
+      
+      // REFINED: WebSocket onmessage handler
+      websocket.current.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.error) {
+            console.error("WebSocket Error from server:", data.error);
+            setInterimTranscript(`Live transcription error: ${data.error}`);
+            return;
+          }
+          
+          if (data.is_final) {
+            // Append final result and clear interim
+            setFinalTranscript(prev => prev + data.transcript + ' ');
+            setInterimTranscript('');
+          } else {
+            // Update interim result
+            setInterimTranscript(data.transcript);
+          }
+        } catch (e) {
+            console.error("Failed to parse WebSocket message:", event.data);
         }
-        
-        if (data.is_final) {
-          setFinalTranscript(prev => prev + data.transcript + ' ');
-          setInterimTranscript('');
-        } else {
-          setInterimTranscript(data.transcript);
-        }
-      } catch (e) {
-        console.error("Failed to parse WebSocket message:", event.data);
-      }
-    };
+      };
 
-    websocket.current.onerror = (error) => {
-      console.error("❌ WebSocket Error:", error);
-      setInterimTranscript("Live transcription connection failed.");
-    };
+      websocket.current.onerror = (error) => {
+        console.error("WebSocket Error:", error);
+        setInterimTranscript("Live transcription connection error.");
+      };
 
-    websocket.current.onclose = (event) => {
-      console.log("WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
-      if (event.code !== 1000) { // 1000 is normal closure
-        setInterimTranscript("Live transcription disconnected.");
-      }
-    };
+      websocket.current.onclose = () => {
+        console.log("WebSocket connection closed.");
+      };
 
-      const recorder = new MediaRecorder(stream, { 
-        mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 16000
-      });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorder.current = recorder;
       let localAudioChunks = [];
       
