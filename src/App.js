@@ -3,13 +3,11 @@ import './App.css';
 import { v4 as uuidv4 } from 'uuid';
 
 // Backend URL - Change this to your deployed backend
-const BACKEND_URL = "https://backend1-410p.onrender.com";
+const BACKEND_URL = "https://backend99-410p.onrender.com";
 // const BACKEND_URL = "http://localhost:8000"; // Local development URL
 
-/**
- * A dedicated component for editing the transcript data.
- * It's fully controlled and handles all form state internally.
- */
+// ... TranscriptEditor and FormattedTranscript components remain the same ...
+// (No changes needed in these components, so they are omitted for brevity)
 const TranscriptEditor = ({ initialData, onSave, onCancel }) => {
   const [editableData, setEditableData] = useState(initialData);
   const [newTerms, setNewTerms] = useState({}); // To hold new term input values for each category
@@ -37,7 +35,7 @@ const TranscriptEditor = ({ initialData, onSave, onCancel }) => {
   const handleAddTerm = (category) => {
     const newTerm = newTerms[category]?.trim();
     if (!newTerm) return;
-    
+
     setEditableData(prev => ({
       ...prev,
       extracted_terms: {
@@ -79,7 +77,7 @@ const TranscriptEditor = ({ initialData, onSave, onCancel }) => {
   return (
     <div className="edit-view">
       <h3>Editing Transcript</h3>
-      
+
       <div className="edit-section">
         <h4>Original Conversation</h4>
         <textarea
@@ -174,11 +172,6 @@ const TranscriptEditor = ({ initialData, onSave, onCancel }) => {
   );
 };
 
-
-/**
- * This component acts as a controller, parsing the transcript content
- * and deciding whether to show the display view or the editor view.
- */
 const FormattedTranscript = ({ initialContent, onSave, transcriptId }) => {
   const [isEditing, setIsEditing] = useState(false);
 
@@ -186,7 +179,7 @@ const FormattedTranscript = ({ initialContent, onSave, transcriptId }) => {
   const parsedContent = useMemo(() => {
     try {
       const mainData = JSON.parse(initialContent);
-      
+
       // Handle both possible medical_data formats (string or object)
       let medicalData;
       if (typeof mainData.medical_data === 'string') {
@@ -195,7 +188,7 @@ const FormattedTranscript = ({ initialContent, onSave, transcriptId }) => {
       } else {
         medicalData = mainData.medical_data;
       }
-      
+
       return {
         verbatim_transcription: mainData.verbatim_transcription,
         ...medicalData
@@ -224,11 +217,11 @@ const FormattedTranscript = ({ initialContent, onSave, transcriptId }) => {
        </div>
     );
   }
-  
+
   // Render the editor if in editing mode
   if (isEditing) {
     return (
-      <TranscriptEditor 
+      <TranscriptEditor
         initialData={parsedContent}
         onSave={handleSave}
         onCancel={() => setIsEditing(false)} // Simply exit editing mode, no refetch needed.
@@ -285,6 +278,11 @@ function App() {
   const [audioStorage, setAudioStorage] = useState({});
   const [activeHistoryId, setActiveHistoryId] = useState(null);
   const [serverStatus, setServerStatus] = useState({ activeTasks: 0, maxTasks: 2 });
+  
+  // REFINED: States for handling live transcription properly
+  const [finalTranscript, setFinalTranscript] = useState('');
+  const [interimTranscript, setInterimTranscript] = useState('');
+
 
   const mediaRecorder = useRef(null);
   const pollingInterval = useRef(null);
@@ -293,6 +291,7 @@ function App() {
   const analyser = useRef(null);
   const dataArray = useRef(null);
   const animationFrame = useRef(null);
+  const websocket = useRef(null);
 
   const fetchTranscripts = useCallback(async () => {
     try {
@@ -311,12 +310,13 @@ function App() {
       if (!response.ok) return;
       
       const data = await response.json();
-      const [activeTasks, maxTasks] = data.concurrent_tasks.split('/').map(Number);
-      
-      setServerStatus({
-        activeTasks: isNaN(activeTasks) ? 0 : activeTasks,
-        maxTasks: isNaN(maxTasks) ? 2 : maxTasks
-      });
+      if (data.concurrent_tasks) {
+        const [activeTasks, maxTasks] = data.concurrent_tasks.split('/').map(Number);
+        setServerStatus({
+          activeTasks: isNaN(activeTasks) ? 0 : activeTasks,
+          maxTasks: isNaN(maxTasks) ? 2 : maxTasks
+        });
+      }
     } catch (error) {
       console.error("Failed to fetch server status:", error);
     }
@@ -333,6 +333,9 @@ function App() {
       clearInterval(statusInterval);
       if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
       if (audioContext.current?.state !== 'closed') audioContext.current?.close();
+      if (websocket.current) {
+        websocket.current.close();
+      }
     };
   }, [fetchTranscripts, fetchServerStatus]);
   
@@ -349,7 +352,6 @@ function App() {
           setStatusMessage("Transcription complete!");
           fetchServerStatus();
           
-          // Update audio storage with new transcript ID
           if (audioStorage[sessionId.current]) {
             const newTranscriptResponse = await fetch(`${BACKEND_URL}/api/transcripts`);
             const allTranscripts = await newTranscriptResponse.json();
@@ -415,7 +417,6 @@ function App() {
   }, [monitorAudioLevel]);
 
   const startRecording = useCallback(async () => {
-    // Check server capacity before starting
     if (serverStatus.activeTasks >= serverStatus.maxTasks) {
       setProcessingState('error');
       setStatusMessage("Server is at capacity. Please try again later.");
@@ -424,10 +425,54 @@ function App() {
     }
     
     setStatusMessage("Initializing...");
+    // REFINED: Reset both transcript states
+    setFinalTranscript('');
+    setInterimTranscript('');
     sessionId.current = uuidv4();
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       setupAudioAnalysis(stream);
+      
+      const wsUrl = BACKEND_URL.replace(/^http/, 'ws') + "/ws/live-transcribe";
+      websocket.current = new WebSocket(wsUrl);
+
+      websocket.current.onopen = () => {
+        console.log("WebSocket connection established for live transcription.");
+      };
+      
+      // REFINED: WebSocket onmessage handler
+      websocket.current.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.error) {
+            console.error("WebSocket Error from server:", data.error);
+            setInterimTranscript(`Live transcription error: ${data.error}`);
+            return;
+          }
+          
+          if (data.is_final) {
+            // Append final result and clear interim
+            setFinalTranscript(prev => prev + data.transcript + ' ');
+            setInterimTranscript('');
+          } else {
+            // Update interim result
+            setInterimTranscript(data.transcript);
+          }
+        } catch (e) {
+            console.error("Failed to parse WebSocket message:", event.data);
+        }
+      };
+
+      websocket.current.onerror = (error) => {
+        console.error("WebSocket Error:", error);
+        setInterimTranscript("Live transcription connection error.");
+      };
+
+      websocket.current.onclose = () => {
+        console.log("WebSocket connection closed.");
+      };
+
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorder.current = recorder;
       let localAudioChunks = [];
@@ -435,6 +480,9 @@ function App() {
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           localAudioChunks.push(event.data);
+          if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
+            websocket.current.send(event.data);
+          }
         }
       };
       
@@ -446,14 +494,18 @@ function App() {
       recorder.onstop = async () => {
         setIsRecording(false);
         setAudioLevel(0);
+        
+        if (websocket.current?.readyState === WebSocket.OPEN) {
+          websocket.current.close();
+        }
+
         setProcessingState('uploading');
         if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
         if (audioContext.current?.state !== 'closed') audioContext.current?.close();
         
-        setStatusMessage("Uploading audio file...");
+        setStatusMessage("Uploading final audio...");
         const audioBlob = new Blob(localAudioChunks, { type: 'audio/webm' });
         
-        // Store audio locally for playback
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = () => {
@@ -462,7 +514,6 @@ function App() {
         };
 
         try {
-          // Upload the single audio chunk
           const formData = new FormData();
           formData.append("session_id", sessionId.current);
           formData.append("chunk_index", 0);
@@ -473,14 +524,12 @@ function App() {
             body: formData 
           });
           
-          // Finalize the recording session
           const finalizeResponse = await fetch(`${BACKEND_URL}/api/finalize-recording`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId.current }),
           });
           
-          // Handle server busy state
           if (finalizeResponse.status === 429) {
             setProcessingState('error');
             setStatusMessage("Server is busy. Please try again later.");
@@ -500,12 +549,13 @@ function App() {
         }
       };
       
-      recorder.start();
+      recorder.start(500); // Get chunks every 500ms
+
     } catch (error) {
       console.error("Error starting recording:", error);
       setProcessingState('error');
       setStatusMessage("Could not start recording. Please allow microphone access.");
-      setTimeout(() => setProcessingState('idle'), 3000);
+      setTimeout(() => setProcessingState('idle'), 1000);
     }
   }, [pollForTranscript, setupAudioAnalysis, serverStatus, fetchServerStatus]);
 
@@ -569,12 +619,6 @@ function App() {
       ))}
     </div>
   );
-  
-  const ProgressBar = () => (
-    <div className="progress-container">
-      <div className="progress-bar"></div>
-    </div>
-  );
 
   const renderStatusAnimation = () => {
     switch (processingState) {
@@ -586,7 +630,6 @@ function App() {
     }
   };
 
-  // Server capacity indicator
   const serverCapacityIndicator = () => {
     const capacityPercent = Math.min(
       (serverStatus.activeTasks / serverStatus.maxTasks) * 100, 
@@ -610,6 +653,17 @@ function App() {
       </div>
     );
   };
+  
+  // REFINED: Live transcript display
+  const LiveTranscriptDisplay = () => (
+    <div className="live-transcript-container">
+      <p>
+        <span className="final-transcript">{finalTranscript}</span>
+        <span className="interim-transcript">{interimTranscript}</span>
+        {(!finalTranscript && !interimTranscript) && <span className="listening-placeholder">Listening...</span>}
+      </p>
+    </div>
+  );
 
   return (
     <div className="App">
@@ -638,6 +692,8 @@ function App() {
         
         {isRecording && <AudioLevelBars />}
         
+        {isRecording && <LiveTranscriptDisplay />}
+
         <div className={`status-container ${processingState !== 'idle' ? 'processing' : ''}`}>
           <h2>Status:</h2>
           <div className="status-content">

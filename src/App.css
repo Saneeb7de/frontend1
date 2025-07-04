@@ -580,3 +580,39 @@ button:hover {
     width: 100%;
   }
 }
+
+/* Add this to your existing App.css file */
+/* Add these styles to your existing App.css file */
+
+.live-transcript-container .interim-transcript {
+  color: #a0a0a0; /* Lighter grey for text that might change */
+}
+
+.live-transcript-container .final-transcript {
+  color: #e0e0e0; /* The main text color for confirmed text */
+}
+
+.live-transcript-container .listening-placeholder {
+  color: #666; /* Even fainter for the initial message */
+  font-style: italic;
+}
+.live-transcript-container {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  width: 100%;
+  max-width: 600px;
+  min-height: 80px;
+  text-align: left;
+  font-size: 1.1em;
+  line-height: 1.5;
+  color: #e0e0e0;
+  transition: all 0.3s ease;
+  font-style: italic;
+}
+
+.live-transcript-container p {
+  margin: 0;
+}
