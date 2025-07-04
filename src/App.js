@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './App.css';
 import { v4 as uuidv4 } from 'uuid';
+import Recorder from 'recorder-js';
 
 // Backend URL - Change this to your deployed backend
 const BACKEND_URL = "https://backend1-1-mr5r.onrender.com";
@@ -434,8 +435,8 @@ function App() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       setupAudioAnalysis(stream);
       
-      const wsUrl = BACKEND_URL.replace(/^http/, 'ws') + "/ws/live-transcribe";
-      websocket.current = new WebSocket(wsUrl);
+      const wssUrl = BACKEND_URL.replace(/^https/, 'wss') + "/wss/live-transcribe";
+      websocket.current = new WebSocket(wssUrl);
 
       websocket.current.onopen = () => {
         console.log("WebSocket connection established for live transcription.");
