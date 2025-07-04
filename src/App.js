@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './App.css';
 import { v4 as uuidv4 } from 'uuid';
-import Recorder from 'recorder-js';
+// import Recorder from 'recorder-js';
 
 // Backend URL - Change this to your deployed backend
 const BACKEND_URL = "https://backend1-1-mr5r.onrender.com";
