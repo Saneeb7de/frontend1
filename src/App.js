@@ -474,7 +474,10 @@ function App() {
         console.log("WebSocket connection closed.");
       };
 
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const recorder = new MediaRecorder(stream, { 
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 16000
+      });
       mediaRecorder.current = recorder;
       let localAudioChunks = [];
       
