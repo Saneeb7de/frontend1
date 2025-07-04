@@ -434,7 +434,7 @@ function App() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       setupAudioAnalysis(stream);
       
-      const wsUrl = BACKEND_URL.replace(/^http/, 'wss') + "/wss/live-transcribe";
+      const wsUrl = BACKEND_URL.replace(/^https/, 'wss') + "/wss/live-transcribe";
       websocket.current = new WebSocket(wsUrl);
 
       websocket.current.onopen = () => {
