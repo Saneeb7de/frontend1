@@ -3,8 +3,8 @@ import './App.css';
 import { v4 as uuidv4 } from 'uuid';
 
 // Backend URL - Change this to your deployed backend
-// const BACKEND_URL = "https://backend1-1-mr5r.onrender.com";
-const BACKEND_URL = "http://localhost:8000"; // Local development URL
+const BACKEND_URL = "https://backend1-1-mr5r.onrender.com";
+// const BACKEND_URL = "http://localhost:8000"; // Local development URL
 
 // ... TranscriptEditor and FormattedTranscript components remain the same ...
 // (No changes needed in these components, so they are omitted for brevity)
