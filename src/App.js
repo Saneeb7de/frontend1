@@ -431,11 +431,7 @@ function App() {
     sessionId.current = uuidv4();
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { 
-          sampleRate: 48000 
-        } 
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       setupAudioAnalysis(stream);
       
       const wsUrl = BACKEND_URL.replace(/^http/, 'ws') + "/ws/live-transcribe";
@@ -473,15 +469,11 @@ function App() {
         setInterimTranscript("Live transcription connection error.");
       };
 
-      websocket.current.onclose = (event) => {
-        console.log("WebSocket connection closed.", event);
-        if (!event.wasClean) {
-          console.error(`WebSocket closed unexpectedly. Code: ${event.code}, Reason: ${event.reason}`);
-          setStatusMessage(`Connection lost: ${event.reason || 'Check console for details.'}`);
-        }
+      websocket.current.onclose = () => {
+        console.log("WebSocket connection closed.");
       };
 
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorder.current = recorder;
       let localAudioChunks = [];
       
@@ -561,6 +553,7 @@ function App() {
 
     } catch (error) {
       console.error("Error starting recording:", error);
+      setProcessingState('error');
       setStatusMessage("Could not start recording. Please allow microphone access.");
       setTimeout(() => setProcessingState('idle'), 1000);
     }
