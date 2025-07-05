@@ -473,8 +473,12 @@ function App() {
         setInterimTranscript("Live transcription connection error.");
       };
 
-      websocket.current.onclose = () => {
-        console.log("WebSocket connection closed.");
+      websocket.current.onclose = (event) => {
+        console.log("WebSocket connection closed.", event);
+        if (!event.wasClean) {
+          console.error(`WebSocket closed unexpectedly. Code: ${event.code}, Reason: ${event.reason}`);
+          setStatusMessage(`Connection lost: ${event.reason || 'Check console for details.'}`);
+        }
       };
 
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
