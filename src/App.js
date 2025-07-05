@@ -3,8 +3,8 @@ import './App.css';
 import { v4 as uuidv4 } from 'uuid';
 
 // Backend URL - Change this to your deployed backend
-const BACKEND_URL = "https://backend1-1-mr5r.onrender.com";
-// const BACKEND_URL = "http://localhost:8000"; // Local development URL
+// const BACKEND_URL = "https://backend1-1-mr5r.onrender.com";
+const BACKEND_URL = "http://localhost:8000"; // Local development URL
 
 // ... TranscriptEditor and FormattedTranscript components remain the same ...
 // (No changes needed in these components, so they are omitted for brevity)
@@ -314,7 +314,7 @@ function App() {
         const [activeTasks, maxTasks] = data.concurrent_tasks.split('/').map(Number);
         setServerStatus({
           activeTasks: isNaN(activeTasks) ? 0 : activeTasks,
-          maxTasks: isNaN(maxTasks) ? 2 : maxTasks
+          maxTasks: isNaN(maxTasks) ? 10000000000 : maxTasks
         });
       }
     } catch (error) {
@@ -431,7 +431,11 @@ function App() {
     sessionId.current = uuidv4();
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { 
+          sampleRate: 48000 
+        } 
+      });
       setupAudioAnalysis(stream);
       
       const wsUrl = BACKEND_URL.replace(/^http/, 'ws') + "/ws/live-transcribe";
@@ -473,7 +477,7 @@ function App() {
         console.log("WebSocket connection closed.");
       };
 
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
       mediaRecorder.current = recorder;
       let localAudioChunks = [];
       
@@ -553,7 +557,6 @@ function App() {
 
     } catch (error) {
       console.error("Error starting recording:", error);
-      setProcessingState('error');
       setStatusMessage("Could not start recording. Please allow microphone access.");
       setTimeout(() => setProcessingState('idle'), 1000);
     }
